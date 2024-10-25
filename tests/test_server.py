@@ -3,8 +3,8 @@ import unittest
 import threading
 import time
 import numpy as np
-from ..server_manager.server import SocketServer
-from ..server_manager.client import SocketClient
+from server_manager.server import SocketServer
+from server_manager.client import SocketClient
 
 # Mock logger for testing purposes
 import logging
