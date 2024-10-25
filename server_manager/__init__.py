@@ -6,9 +6,12 @@ import threading
 import numpy as np
 import logging
 
-from aiportal.sockets.base import logger
-from aiportal.sockets.client import SocketClient
-from aiportal.sockets.server import SocketServer
+# Mock logger for testing purposes
+import logging
+logger = logging.getLogger('test_logger')
+logger.setLevel(logging.DEBUG)
+from client import SocketClient
+from server import SocketServer
 
 # Set logger level to DEBUG for detailed output
 logger.setLevel(logging.DEBUG)
