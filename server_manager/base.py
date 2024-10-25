@@ -2,8 +2,12 @@ import pickle
 import socket
 import struct
 
+import logging
 # Configure logging
-from aiportal.utils.logger import logger
+logging.basicConfig(level=logging.INFO)  # Configure basic logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 
 
 class ServerClientBase:
