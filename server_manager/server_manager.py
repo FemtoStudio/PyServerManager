@@ -38,7 +38,7 @@ import sys
 
 from PySide6 import QtWidgets, QtCore
 
-from aiportal.sockets.utils import MessageReceiver, safe_eval
+from .utils import MessageReceiver, safe_eval
 
 
 class StatusUpdateThread(QtCore.QThread):

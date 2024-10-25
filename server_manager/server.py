@@ -39,8 +39,8 @@ import queue
 import socket
 import threading
 
-from aiportal.sockets.base import ServerClientBase
-from aiportal.sockets.utils import MessageReceiver, SingletonMeta
+from .base import ServerClientBase
+from .utils import MessageReceiver, SingletonMeta
 
 
 class BaseConnectionHandler:
@@ -403,6 +403,7 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
             worker.start()
             self.worker_threads.append(worker)
 
+        self.server_ready = True
 
     def send_to_all_clients(self, data):
         """
