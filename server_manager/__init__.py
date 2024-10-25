@@ -1,20 +1,18 @@
 # main.py
-import time
-from time import sleep
-import threading
-
-import numpy as np
-import logging
-
 # Mock logger for testing purposes
 import logging
+import threading
+import time
+from time import sleep
+
+import numpy as np
+
 logger = logging.getLogger('test_logger')
 logger.setLevel(logging.DEBUG)
-from client import SocketClient
-from server import SocketServer
 
 # Set logger level to DEBUG for detailed output
 logger.setLevel(logging.DEBUG)
+
 
 # Define the data handler function for the server
 def data_handler(data):
@@ -41,6 +39,7 @@ def data_handler(data):
         # If data is not a dict, just return it as is
         return data
 
+
 def client_thread_function(client_id, test_data):
     # Start the client
     client = SocketClient(host='localhost', port=5050)
@@ -52,7 +51,11 @@ def client_thread_function(client_id, test_data):
     finally:
         client.close_client()
 
+
 if __name__ == '__main__':
+    from PyServerManager.server_manager.client import SocketClient
+    from PyServerManager.server_manager.server import SocketServer
+
     # Start the server
     server = SocketServer(port=5050, data_handler=data_handler)
     server.start_accepting_clients(return_response_data=True)
@@ -63,9 +66,9 @@ if __name__ == '__main__':
     test_data_list = [
         {
             'message': f'Hello from client {i}',
-            'numbers': [i, i+1, i+2],
-            'array': np.array([i*10, i*20, i*30]),
-            'value': i*10
+            'numbers': [i, i + 1, i + 2],
+            'array': np.array([i * 10, i * 20, i * 30]),
+            'value': i * 10
         }
         for i in range(num_clients)
     ]
