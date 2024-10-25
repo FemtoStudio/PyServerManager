@@ -30,6 +30,7 @@ class TestSocketClient(unittest.TestCase):
     def setUp(self):
         # Initialize and start the server for client testing
         self.server = SocketServer(port=5050, data_handler=data_handler)
+
         server_thread = threading.Thread(target=self.server.start_accepting_clients, kwargs={'return_response_data': True})
         server_thread.daemon = True  # Daemonize thread to automatically exit
         server_thread.start()

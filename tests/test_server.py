@@ -36,8 +36,12 @@ class TestSocketServer(unittest.TestCase):
         time.sleep(1)  # Give server time to start
 
     def tearDown(self):
-        # Close the server after the test
+        # Close the server
         self.server.close_server()
+
+        # Ensure all server threads are stopped
+        self.server.client_acceptor.join()
+        self.server.management_acceptor.join()
 
     def test_server_accept_client(self):
         # Check if server is accepting connections and handling data
