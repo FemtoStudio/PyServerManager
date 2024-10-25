@@ -7,6 +7,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         'PySide6==6.5.0',
+        'numpy',
     ],
     entry_points={
         'console_scripts': [
