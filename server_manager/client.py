@@ -31,8 +31,8 @@ import socket
 
 import select
 
-from .base import ServerClientBase
-from .utils import MessageReceiver
+from base import ServerClientBase
+from utils import MessageReceiver
 
 
 class SocketClient(ServerClientBase):
@@ -160,7 +160,6 @@ class SocketClient(ServerClientBase):
             if self.client is not None:
                 self.client.close()
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.client.settimeout(5)  # 5 seconds timeout for network operations
 
             self.logger.debug(f"Trying to connect to {self.host}:{self.port}")
             self.client.connect((self.host, self.port))

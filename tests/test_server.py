@@ -41,4 +41,5 @@ class TestSocketServer(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    logger.info("Running server tests...")
     unittest.main()

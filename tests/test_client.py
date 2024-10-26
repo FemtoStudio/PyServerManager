@@ -5,7 +5,6 @@ import numpy as np
 from server_manager.server import SocketServer
 from server_manager.client import SocketClient
 
-# Mock logger for testing purposes
 import logging
 
 logger = logging.getLogger('test_logger')
@@ -33,26 +32,29 @@ class TestSocketClient(unittest.TestCase):
         # Initialize and start the server for client testing
         self.server = SocketServer(port=5050, data_handler=data_handler)
 
-        # Start server in a separate thread
+        # Start server in a separate thread without daemon
         self.server_thread = threading.Thread(target=self.server.start_accepting_clients,
                                               kwargs={'return_response_data': True})
-        self.server_thread.daemon = True  # Daemonize thread to automatically exit
         self.server_thread.start()
         time.sleep(1)  # Give server time to start
 
     def tearDown(self):
-        # Ensure server shutdown after each test
+        # Initiate server shutdown
         self.server.close_server()
 
-        # Join server thread to make sure it's stopped
+        # Ensure all server threads are joined
+        if self.server.client_acceptor.active:
+            self.server.client_acceptor.join()
+        if self.server.management_acceptor.active:
+            self.server.management_acceptor.join()
+
+        # Join server main thread
         self.server_thread.join()
 
     def test_client_send_data(self):
         # Test client connection and data retrieval
         client = SocketClient(host='localhost', port=5050)
 
-        # Set a timeout to avoid hanging indefinitely
-        client.socket.settimeout(5)
 
         test_data = {
             'message': 'Client test',
@@ -65,12 +67,13 @@ class TestSocketClient(unittest.TestCase):
 
         # Validate the response
         self.assertIsInstance(response, dict)
-        self.assertEqual(response['value'], 6)  # Check if value is incremented
-        self.assertTrue((response['array'] == np.array([20, 40, 60])).all())  # Check array multiplication
+        self.assertEqual(response['value'], 6)
+        self.assertTrue((response['array'] == np.array([20, 40, 60])).all())
 
-        # Close the client connection cleanly
+        # Clean up client connection
         client.close_client()
 
 
 if __name__ == '__main__':
+    logger.info("Running client tests...")
     unittest.main()
