@@ -31,11 +31,6 @@
    pip install -r requirements.txt
    ```
 
-3. **Run PyServerManager:**
-
-   ```bash
-   python main.py
-   ```
 
 ---
 
@@ -46,7 +41,7 @@
    - This will listen for client connections and management commands from **PyServerManager**.
 
 2. **Starting the GUI**:
-   - Run the `main.py` file to launch the GUI.
+   - Run the `server_manger.py` file to launch the GUI.
    - Use the interface to monitor server status, manage clients, and send administrative commands.
 
 ---
