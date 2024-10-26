@@ -39,8 +39,8 @@ import queue
 import socket
 import threading
 
-from base import ServerClientBase
-from utils import MessageReceiver, SingletonMeta
+from .base import ServerClientBase
+from .utils import MessageReceiver, SingletonMeta
 
 
 class BaseConnectionHandler:

@@ -31,8 +31,8 @@ import socket
 
 import select
 
-from base import ServerClientBase
-from utils import MessageReceiver
+from .base import ServerClientBase
+from .utils import MessageReceiver
 
 
 class SocketClient(ServerClientBase):
