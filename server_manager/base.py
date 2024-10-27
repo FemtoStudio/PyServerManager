@@ -1,7 +1,7 @@
 import pickle
 import socket
 import struct
-
+import threading
 import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)  # Configure basic logging
@@ -29,6 +29,7 @@ class ServerClientBase:
         """
         self.client_threads = {}
         self.client_connections = {}
+        self.client_connections_lock = threading.Lock()
         self.logger = logger
 
     def close_connection(self, addr):

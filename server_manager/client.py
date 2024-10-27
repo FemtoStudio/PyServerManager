@@ -28,6 +28,8 @@ checking the server's readiness state.
 
 import pickle
 import socket
+import threading
+import time
 
 import select
 
@@ -48,6 +50,7 @@ class SocketClient(ServerClientBase):
         port (int): The server's port number.
         client (socket): The client socket used for communication.
     """
+
     def __init__(self, host='localhost', port=5050):
         """
          Initializes the socket client with the specified host and port.
@@ -63,6 +66,7 @@ class SocketClient(ServerClientBase):
         self.port = port
         self.client = None  # Initialize client as None
         self.status = 'Initialized'
+        self.thread_list = []  # List to keep track of reconnect threads
 
     def send_data_and_wait_for_response(self, data, timeout=60):
         """
@@ -143,7 +147,7 @@ class SocketClient(ServerClientBase):
             self.logger.error(f"Failed to send data: {e}")
             raise
 
-    def connect_to_server(self):
+    def connect_to_server(self, host=None, port=None):
         """
         Establishes a connection to the server.
 
@@ -151,11 +155,25 @@ class SocketClient(ServerClientBase):
         specified host and port. If successful, the connection is maintained until
         explicitly closed.
 
+        @param host: The server's host address, optional.
+        @type host: str
+        @param port: The server's port number, optional.
+        @type port: int
+
         @return: True if the connection was successful, False otherwise.
         @rtype: bool
         @raises ConnectionRefusedError: If the connection is refused by the server.
         @raises Exception: For other errors encountered during the connection process.
         """
+        if (host is not None and host != self.host) or (port is not None and port != self.port):
+            self.host = host or self.host
+            self.port = port or self.port
+            self.close_client()
+
+        if not self.port or not self.host:
+            self.logger.error("Host and port must be specified to connect to the server.")
+            return False
+
         try:
             if self.client is not None:
                 self.client.close()
@@ -181,6 +199,72 @@ class SocketClient(ServerClientBase):
             self.is_client_connected = False
             return False
 
+    def is_server_running(self):
+        """
+        Checks if the server is running.
+
+        This method attempts to connect to the server's port to check if the server is running.
+
+        Returns:
+            bool: True if the server is running, otherwise False.
+        """
+        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            test_socket.connect((self.host, self.port))
+            test_socket.close()
+            return True
+        except socket.error:
+            return False
+
+    def attempting_to_connect(self, host=None, port=None, start_sleep=0, retry_delay=5, max_retries=None):
+        """
+        Starts a new thread to attempt to connect to the server continuously until successful.
+
+        @param host: Optional server host address.
+        @param port: Optional server port.
+        @param start_sleep: Initial delay before attempting to connect, in seconds.
+        @param retry_delay: Delay between retries in seconds.
+        @param max_retries: Maximum number of retries. If None, retries indefinitely.
+        """
+        thread = threading.Thread(
+            target=self._attempt_connect_loop,
+            args=(host, port, start_sleep, retry_delay, max_retries)
+        )
+        thread.daemon = True
+        thread.start()
+        self.logger.debug('Attempting to connect on a separate thread')
+        self.thread_list.append(thread)
+
+    def _attempt_connect_loop(self, host=None, port=None, start_sleep=0, retry_delay=5, max_retries=None):
+        """
+        Attempts to connect to the server continuously until successful.
+
+        @param host: Hostname to connect to.
+        @param port: Port number to connect to.
+        @param start_sleep: Initial delay in seconds before starting connection attempts.
+        @param retry_delay: Delay between retries in seconds.
+        @param max_retries: Maximum number of retries. If None, retries indefinitely.
+        """
+        if start_sleep > 0:
+            time.sleep(start_sleep)
+
+        self.host = host or self.host
+        self.port = port or self.port
+
+        retries = 0
+        while not self.is_client_connected:
+            connected = self.connect_to_server()
+            if connected:
+                self.logger.info(f"Successfully connected to server at {self.host}:{self.port}")
+                break
+            else:
+                if max_retries is not None and retries >= max_retries:
+                    self.logger.error(f"Failed to connect to the server after {retries} attempts.")
+                    break
+                retries += 1
+                self.logger.info(f"Retrying connection to server (Attempt {retries}) at {self.host}:{self.port}")
+                time.sleep(retry_delay)
+
     def close_client(self):
         """
         Closes the client socket.
@@ -202,40 +286,20 @@ class SocketClient(ServerClientBase):
 
     def close_server(self):
         """
-        Closes the server, stopping all active connections and shutting down the server socket.
+        Sends the 'quit' command to the server to initiate server shutdown.
 
-        This method is part of the server-side logic that ensures the server is gracefully
-        shut down, including closing active client connections and releasing socket resources.
+        This method encodes the 'quit' command and sends it to the server. If successful,
+        the server should shut down. It raises an exception if there is a connection issue.
         """
-        self.active = False
-        self.logger.info("Initiating server shutdown...")
-        # Copy the keys to avoid changing dict size during iteration
-        client_addrs = list(self.client_connections.keys())
-        for addr in client_addrs:
-            self.close_connection(addr)
-        # Shut down the server socket
-        if self.server_socket.fileno() != -1:
-            try:
-                self.server_socket.shutdown(socket.SHUT_RDWR)
-                self.logger.info("Server socket shutdown successfully.")
-            except OSError as e:
-                if e.errno == 10057:
-                    self.logger.warning("Server socket is not connected; nothing to shutdown.")
-                else:
-                    self.logger.error(f"Non-critical error during server socket shutdown: {e}")
-            except Exception as e:
-                self.logger.error(f"Unexpected error during server socket shutdown: {e}")
-        # Close the server socket
+        print("Is server ready:", self.query_server_ready())
+        print("Sending close command to server.")
         try:
-            if self.server_socket.fileno() != -1:
-                self.server_socket.close()
-                self.logger.info("Server socket closed successfully.")
+            close_command = self.encode_data('CMD', 'quit')
+            self.client.sendall(close_command)
+            self.logger.info("Close command sent to the server.")
         except Exception as e:
-            self.logger.error(f"Error closing server socket: {e}")
-        self.server_ready = False
-        self.client_connections.clear()
-        self.client_threads.clear()
-        self.logger.info("Server has been fully shut down.")
+            self.logger.error(f"Failed to send close command to server: {e}")
+            raise
 
     def query_server_ready(self):
         """
@@ -258,6 +322,6 @@ class SocketClient(ServerClientBase):
                 messages = receiver.feed_data(data)
                 for message_type, payload in messages:
                     if message_type == 'RESP':
-                        response = payload.decode('ascii')
+                        response = pickle.loads(payload)  # Unpickle the payload
                         return response == 'yes'
         return False

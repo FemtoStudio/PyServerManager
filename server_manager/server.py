@@ -142,6 +142,7 @@ class ClientConnectionHandler(BaseConnectionHandler):
                 self.logger.warning(f"Connection aborted by {self.addr}.")
             else:
                 self.logger.error(f"OSError occurred: {e}")
+
         except Exception as e:
             self.logger.error(f"An unexpected error occurred: {e}")
         finally:
@@ -405,6 +406,7 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
 
         self.server_ready = True
 
+
     def send_to_all_clients(self, data):
         """
         Sends a message to all connected clients.
@@ -480,7 +482,8 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
                 data_handler = request_info['data_handler']
                 return_response_data = request_info['return_response_data']
 
-                self.client_connections[addr]['status'] = 'Processing Request'
+                with self.client_connections_lock:
+                    self.client_connections[addr]['status'] = 'Processing Request'
 
                 if message_type == 'DATA':
                     decoded_data = pickle.loads(payload)
@@ -493,7 +496,7 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
                             except Exception as e:
                                 self.logger.error(f"Failed to send data to client at {addr}: {e}")
                 elif message_type == 'CMD':
-                    command = payload.decode('ascii')
+                    command = pickle.loads(payload)  # Correctly unpickle the payload
                     if command == 'quit':
                         self.close_server()
                         return
