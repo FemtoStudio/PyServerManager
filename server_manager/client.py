@@ -291,12 +291,12 @@ class SocketClient(ServerClientBase):
         This method encodes the 'quit' command and sends it to the server. If successful,
         the server should shut down. It raises an exception if there is a connection issue.
         """
-        print("Is server ready:", self.query_server_ready())
-        print("Sending close command to server.")
+
         try:
             close_command = self.encode_data('CMD', 'quit')
             self.client.sendall(close_command)
             self.logger.info("Close command sent to the server.")
+            self.is_client_connected = False
         except Exception as e:
             self.logger.error(f"Failed to send close command to server: {e}")
             raise
