@@ -34,10 +34,13 @@ and allows administrative tasks through a management interface.
 Thread-safe data structures like `queue.Queue` are used to ensure thread-safe operation, allowing for concurrent data reception and processing without blocking other threads.
 """
 
+import json
+import os
 import pickle
 import queue
 import socket
 import threading
+import time
 
 from .base import ServerClientBase
 from .utils import MessageReceiver, SingletonMeta
@@ -90,6 +93,11 @@ class BaseConnectionHandler:
         except Exception as e:
             self.logger.error(f"Error closing connection with {self.addr}: {e}")
 
+    def cleanup_resources(self):
+        """
+        Performs cleanup of resources held by the connection handler.
+        """
+        self.close_connection()
 
 class ClientConnectionHandler(BaseConnectionHandler):
     """
@@ -115,7 +123,7 @@ class ClientConnectionHandler(BaseConnectionHandler):
         self.logger.debug(f"Handling client connection from {self.addr}.")
         self.server.client_connections[self.addr] = {'conn': self.conn, 'status': 'Connected'}
         try:
-            while True:
+            while self.server.active:
                 data = self.conn.recv(4096)
                 if not data:
                     self.logger.debug(f"No data received from {self.addr}, closing connection.")
@@ -263,6 +271,7 @@ class ConnectionAcceptor:
         self.socket.bind((self.host, self.port))
         self.socket.listen(1)
         self.active = True
+        self.handler_threads = []
 
         self.accept_thread = threading.Thread(target=self.accept_connections)
         self.accept_thread.daemon = True
@@ -308,6 +317,12 @@ class ConnectionAcceptor:
         """
         self.accept_thread.join()
 
+    def join_handler_threads(self):
+        for thread in self.handler_threads:
+            try:
+                thread.join()
+            except Exception as e:
+                self.logger.debug(f"thread errored while joining {e}")
 
 class SocketServer(ServerClientBase, metaclass=SingletonMeta):
     """
@@ -338,7 +353,7 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
         """
         return cls._instances.copy()
 
-    def __init__(self, port=None, data_handler=None, host="localhost", management_port=None):
+    def __init__(self, port=None, data_handler=None, host="localhost", management_port=None, server_register_dir=None):
         """
         Initializes the socket server, sets up connection acceptors, and starts worker threads.
 
@@ -346,6 +361,8 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
         @param data_handler: Optional data handler for processing incoming client data.
         @param host: The host on which the server is running.
         @param management_port: Optional port for management connections.
+        @param server_register_dir: Optional dir to the JSON file for server registry.
+
         """
         super().__init__()
         self.server_ready = False
@@ -382,6 +399,167 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
         handler_logger = f', DataHandler:{data_handler.__name__}' if data_handler else ''
         self.logger.info(f"Server created on port {self.port}, Host:{host}{handler_logger}")
         self.logger.info(f"Management interface available on port {self.management_port}")
+        # Handle JSON file path for server registry
+
+        self.server_register_dir = server_register_dir
+
+        self.registry_lock = threading.RLock()  # Lock for thread-safe registry access
+
+        # Register the server in the JSON file
+        self.register_server()
+
+        self.cleanup_thread = threading.Thread(target=self.periodic_cleanup, name="RegistryCleanupThread")
+        self.cleanup_thread.daemon = True
+        self.cleanup_thread.start()
+
+
+        self.shutdown_event = threading.Event()
+        self.shutdown_thread = threading.Thread(target=self.shutdown_watcher, name="ShutdownWatcher")
+        self.shutdown_thread.start()
+
+    def shutdown_watcher(self):
+        """
+        Waits for the shutdown event and calls close_server().
+        """
+        self.shutdown_event.wait()  # Block until the event is set
+        self.close_server()
+
+    def periodic_cleanup(self, interval=3600):
+        """
+        Periodically cleans up the server registry every 'interval' seconds.
+        """
+        self.cleanup_server_registry()
+        sleep_interval = 1  # Sleep in 1-second intervals
+        elapsed_time = 0
+        while self.active:
+            time.sleep(sleep_interval)
+            elapsed_time += sleep_interval
+            if elapsed_time >= interval:
+                self.cleanup_server_registry()
+                elapsed_time = 0
+
+    @property
+    def json_file_path(self):
+        json_name = '.PyServer'
+        if self.server_register_dir and os.path.isdir(self.server_register_dir):
+            return os.path.join(self.server_register_dir, json_name)
+        return os.path.expanduser(f'~/{json_name}')
+
+
+    def register_server(self):
+        """
+        Registers the server in the JSON file.
+
+        Adds an entry with the hostname as the key and a dictionary containing the port and
+        data handler function name as the value.
+        """
+        server_key = f"{self.host}:{self.port}"
+        data_handler_name = self.data_handler.__name__ if self.data_handler else None
+        data_handler_info = f"{self.data_handler.__module__}.{self.data_handler.__qualname__}" if self.data_handler else None
+        server_entry = {
+            "hostname": self.host,
+            "port": self.port,
+            "data_handler": data_handler_name,
+            "data_handler_info": data_handler_info
+        }
+
+        with self.registry_lock:
+            registry = self.read_server_registry()
+            registry[server_key] = server_entry
+            self.write_server_registry(registry)
+            self.logger.info(f"Server registered in {self.json_file_path}")
+
+    def is_server_reachable(self, hostname, port, timeout=2.0):
+        """
+        Attempts to connect to a server to check if it is reachable.
+
+        @param hostname: The hostname of the server.
+        @param port: The port number of the server.
+        @param timeout: Connection timeout in seconds.
+        @return: True if the server is reachable, False otherwise.
+        """
+        try:
+            with socket.create_connection((hostname, port), timeout=timeout):
+                return True
+        except (socket.timeout, ConnectionRefusedError, OSError) as e:
+            self.logger.debug(f"Server {hostname}:{port} is not reachable: {e}")
+            return False
+
+    def cleanup_server_registry(self):
+        """
+        Cleans up the server registry by removing entries for servers that are not reachable.
+        """
+        server_registry_path = self.json_file_path
+        self.logger.info(f"Cleaning up server registry at {server_registry_path}")
+
+        with self.registry_lock:
+            try:
+                registry = self.read_server_registry()
+                updated_registry = {}
+                for server_key, server_entry in registry.items():
+                    hostname = server_entry.get('hostname')
+                    port = server_entry.get('port')
+                    if self.is_server_reachable(hostname, port):
+                        updated_registry[server_key] = server_entry
+                    else:
+                        self.logger.info(f"Removing unreachable server {server_key} from registry.")
+                self.write_server_registry(updated_registry)
+                self.logger.info("Server registry cleanup completed.")
+            except Exception as e:
+                self.logger.error(f"Error during server registry cleanup: {e}")
+
+    def unregister_server(self):
+        """
+        Removes the server's entry from the JSON file.
+        """
+
+        server_key = f"{self.host}:{self.port}"
+        self.logger.info(
+            f"[{threading.current_thread().name}] Unregistering server from {self.json_file_path}, server_key: {server_key}")
+        with self.registry_lock:
+            self.logger.debug(f"[{threading.current_thread().name}] Acquired registry_lock.")
+            registry = self.read_server_registry()
+            self.logger.debug(f"[{threading.current_thread().name}] Registry contents: {registry}")
+            if server_key in registry:
+                del registry[server_key]
+                self.write_server_registry(registry)
+                self.logger.info(f"Server unregistered from {self.json_file_path}")
+            else:
+                self.logger.warning(f"Server key {server_key} not found in registry.")
+
+    def read_server_registry(self):
+        """
+        Reads the server registry from the JSON file.
+
+        @return: A dictionary representing the server registry.
+        @rtype: dict
+        """
+        try:
+            if os.path.exists(self.json_file_path):
+                with open(self.json_file_path, 'r') as json_file:
+                    registry = json.load(json_file)
+                    self.logger.debug(f"Registry read successfully: {registry}")
+            else:
+                registry = {}
+                self.logger.debug("Registry file does not exist. Starting with empty registry.")
+            return registry
+        except Exception as e:
+            self.logger.error(f"Error reading server registry: {e}")
+            return {}
+
+    def write_server_registry(self, registry):
+        """
+        Writes the server registry to the JSON file.
+
+        @param registry: The server registry to write.
+        @type registry: dict
+        """
+        try:
+            with open(self.json_file_path, 'w') as json_file:
+                json.dump(registry, json_file, indent=4)
+                self.logger.debug(f"Registry written successfully: {registry}")
+        except Exception as e:
+            self.logger.error(f"Error writing server registry: {e}")
 
     def start_accepting_clients(self, data_handler=None, return_response_data=False):
         """
@@ -400,12 +578,12 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
         # Start worker threads
         for _ in range(self.num_worker_threads):
             worker = threading.Thread(target=self.process_requests)
-            worker.daemon = True
+            # worker.daemon = True
             worker.start()
             self.worker_threads.append(worker)
 
         self.server_ready = True
-
+        # self.register_server()
 
     def send_to_all_clients(self, data):
         """
@@ -441,11 +619,11 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
             self.logger.debug(f"No connection found for {addr}")
 
     def close_server(self):
-        """
-        Closes the server, stops all acceptors, and closes all active connections.
-        """
         self.active = False
         self.logger.info("Initiating server shutdown...")
+
+        # Unregister the server
+        self.unregister_server()
 
         # Stop acceptors
         self.client_acceptor.stop()
@@ -460,6 +638,23 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
         self.client_acceptor.join()
         self.management_acceptor.join()
 
+        # Wait for handler threads to finish
+        self.client_acceptor.join_handler_threads()
+        self.management_acceptor.join_handler_threads()
+
+        # Wait for worker threads to finish
+        current_thread = threading.current_thread()
+        for worker in self.worker_threads:
+            if worker is not current_thread:
+                try:
+                    worker.join()
+                except Exception as e:
+                    self.logger.error(f"Error while joining worker thread: {e}")
+            else:
+                self.logger.debug(f"Skipping join on current thread: {worker.name}")
+
+        # No need to join the shutdown thread as it will exit after calling close_server
+
         self.server_ready = False
         self.client_connections.clear()
         self.logger.info("Server has been fully shut down.")
@@ -472,9 +667,9 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
         and processes them based on the message type (e.g., `DATA`, `CMD`). If required,
         responses are generated and sent back to clients.
         """
-        while self.active:
+        while self.active or not self.request_queue.empty():
             try:
-                request_info = self.request_queue.get()
+                request_info = self.request_queue.get(timeout=1)  # Add a timeout here
                 conn = request_info['conn']
                 addr = request_info['addr']
                 message_type = request_info['message_type']
@@ -498,8 +693,17 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
                 elif message_type == 'CMD':
                     command = pickle.loads(payload)  # Correctly unpickle the payload
                     if command == 'quit':
-                        self.close_server()
-                        return
+                        self.logger.info("Shutdown command received.")
+                        self.shutdown_event.set()
+                        self.active = False  # Signal other worker threads to exit
+                        # Optionally send a response to the client
+                        response = 'Server is shutting down'
+                        encoded_response = self.encode_data('RESP', response)
+                        try:
+                            conn.sendall(encoded_response)
+                        except Exception as e:
+                            self.logger.error(f"Failed to send response to client at {addr}: {e}")
+                        return  # Exit this worker thread
                     elif command == 'is_server_ready':
                         response = 'yes' if self.server_ready else 'no'
                         encoded_response = self.encode_data('RESP', response)
@@ -512,6 +716,10 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
 
                 self.client_connections[addr]['status'] = 'Idle'
                 self.request_queue.task_done()
+            except queue.Empty:
+                if not self.active:
+                    break  # Exit the loop if the server is not active
+                continue  # Continue if active but queue is empty
             except Exception as e:
                 self.logger.error(f"Error processing request: {e}")
 

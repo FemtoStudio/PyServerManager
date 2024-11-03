@@ -58,7 +58,7 @@ if __name__ == '__main__':
 
     # Start the server
     server = SocketServer(port=5050, data_handler=data_handler)
-    server.start_accepting_clients(return_response_data=True)
+    server.run_server(return_response_data=True)
     time.sleep(1)  # Give the server a moment to start
 
     # Prepare test data for multiple clients

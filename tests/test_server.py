@@ -18,26 +18,42 @@ def data_handler(data):
 class TestSocketServer(unittest.TestCase):
 
     def setUp(self):
-        # Initialize and start the server
-        self.server = SocketServer(port=5050, data_handler=data_handler)
+        # Initialize and start the server on an available port
+        self.port = SocketServer.find_available_port()
+        self.server = SocketServer(port=self.port, data_handler=data_handler)
         self.server_thread = threading.Thread(target=self.server.start_accepting_clients,
                                               kwargs={'return_response_data': True})
-        self.server_thread.daemon = True  # Daemonize thread to automatically exit
         self.server_thread.start()
         time.sleep(1)  # Give server time to start
 
     def tearDown(self):
         # Close the server after the test
         self.server.close_server()
-
-        # Ensure all server threads are stopped
-        self.server.client_acceptor.join()
-        self.server.management_acceptor.join()
+        # Wait for server thread to finish
+        self.server_thread.join()
+        time.sleep(1)  # Give server time to shut down
 
     def test_server_start_and_shutdown(self):
         # Simple test to start and stop the server
-        self.assertTrue(self.server.server_ready)  # Check if server is running
+        self.assertTrue(self.server.server_ready, "Server did not start successfully")
         time.sleep(1)  # Allow some time to simulate server activity
+
+    def test_server_client_communication(self):
+        # Import the client class
+        from server_manager.client import SocketClient
+
+        # Create a client and connect to the server
+        client = SocketClient(host='localhost', port=self.port)
+        connected = client.connect_to_server()
+        self.assertTrue(connected, "Client failed to connect to the server")
+
+        # Send data and wait for response
+        test_data = "Hello, Server!"
+        response = client.send_data_and_wait_for_response(test_data)
+        self.assertEqual(response, test_data, "The response from the server did not match the sent data")
+
+        # Disconnect the client
+        client.disconnect_from_server()
 
 
 if __name__ == '__main__':

@@ -71,7 +71,8 @@ class TestSocketClient(unittest.TestCase):
         self.assertTrue((response['array'] == np.array([20, 40, 60])).all())
 
         # Clean up client connection
-        client.close_client()
+        client.close_server()
+        # client.disconnect_from_server()
 
 
 if __name__ == '__main__':

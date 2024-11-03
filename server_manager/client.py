@@ -107,14 +107,23 @@ class SocketClient(ServerClientBase):
                         self.status = 'Received Response'
                 return None
             else:
+                # Connection closed by server
                 self.status = 'No Response Received'
+                self.is_client_connected = False  # Update the connection status
                 self.logger.debug('No response received, server might have closed the connection.')
+                raise ConnectionError('Server closed the connection.')
         except socket.timeout:
             self.status = 'Timeout'
             self.logger.error('Timeout reached while waiting for response.')
             raise
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError) as e:
+            self.status = 'Disconnected'
+            self.is_client_connected = False  # Update the connection status
+            self.logger.error(f"Connection lost during data transmission: {e}")
+            raise
         except Exception as e:
             self.status = 'Error'
+            self.is_client_connected = False  # Update the connection status
             self.logger.error(f"An error occurred while sending data and waiting for response: {e}")
             raise
 
@@ -136,6 +145,7 @@ class SocketClient(ServerClientBase):
         @raises Exception: If an error occurs during sending or receiving data.
         """
         if not self.is_client_connected:
+            self.logger.info(f"Client is not connected. Attempting to connect to {self.host}:{self.port}")
             connected = self.connect_to_server()
             if not connected:
                 self.logger.error(f"Unable to connect to server at {self.host}:{self.port}.")
@@ -165,26 +175,41 @@ class SocketClient(ServerClientBase):
         @raises ConnectionRefusedError: If the connection is refused by the server.
         @raises Exception: For other errors encountered during the connection process.
         """
-        if (host is not None and host != self.host) or (port is not None and port != self.port):
-            self.host = host or self.host
-            self.port = port or self.port
-            self.close_client()
+        # Determine the target host and port
+        target_host = host or self.host
+        target_port = port or self.port
 
-        if not self.port or not self.host:
+        # Check if the client is already connected
+        if self.is_client_connected:
+            if self.host == target_host and self.port == target_port:
+                self.logger.warning(f"Client is already connected to {self.host}:{self.port}")
+                return True  # Already connected to the desired server
+            else:
+                self.logger.warning(
+                    f"Client is already connected to {self.host}:{self.port}. "
+                    f"To connect to a different server ({target_host}:{target_port}), "
+                    "please close the current connection first."
+                )
+                return False  # Cannot proceed without closing the existing connection
+
+        # Update host and port
+        self.host = target_host
+        self.port = target_port
+
+        if not self.host or not self.port:
             self.logger.error("Host and port must be specified to connect to the server.")
             return False
 
         try:
-            if self.client is not None:
-                self.client.close()
+            # Initialize the client socket
             self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
             self.logger.debug(f"Trying to connect to {self.host}:{self.port}")
             self.client.connect((self.host, self.port))
             self.client.setblocking(True)
             self.is_client_connected = True
-            self.logger.info(f"Successfully connected to server at {self.host}:{self.port}")
             self.status = 'Connected'
+            self.logger.info(f"Successfully connected to server at {self.host}:{self.port}")
             return True
         except ConnectionRefusedError:
             self.logger.warning(f"Connection to server at {self.host}:{self.port} refused.")
@@ -226,6 +251,7 @@ class SocketClient(ServerClientBase):
         @param retry_delay: Delay between retries in seconds.
         @param max_retries: Maximum number of retries. If None, retries indefinitely.
         """
+
         thread = threading.Thread(
             target=self._attempt_connect_loop,
             args=(host, port, start_sleep, retry_delay, max_retries)
@@ -265,7 +291,7 @@ class SocketClient(ServerClientBase):
                 self.logger.info(f"Retrying connection to server (Attempt {retries}) at {self.host}:{self.port}")
                 time.sleep(retry_delay)
 
-    def close_client(self):
+    def disconnect_from_server(self):
         """
         Closes the client socket.
 
@@ -302,26 +328,32 @@ class SocketClient(ServerClientBase):
             raise
 
     def query_server_ready(self):
-        """
-        Sends a command to the server to check if it is ready.
+        try:
+            query_command = self.encode_data('CMD', 'is_server_ready')
+            self.client.sendall(query_command)
+            receiver = MessageReceiver()
+            ready = select.select([self.client], [], [], 10)
+            if ready[0]:
+                data = self.client.recv(1024)
+                if data:
+                    messages = receiver.feed_data(data)
+                    for message_type, payload in messages:
+                        if message_type == 'RESP':
+                            response = pickle.loads(payload)  # Unpickle the payload
+                            return response == 'yes'
+                else:
+                    # Connection closed by server
+                    self.is_client_connected = False
+                    self.logger.debug('No response received, server might have closed the connection.')
+                    return False
+            else:
+                self.logger.debug('No response from server within timeout.')
+                return False
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError) as e:
+            self.is_client_connected = False
+            self.logger.error(f"Connection lost during server query: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Error during server query: {e}")
+            return False
 
-        This method sends a 'is_server_ready' command to the server and waits for a response.
-        If the server responds with 'yes', it indicates that the server is ready to process
-        requests. Otherwise, it returns False.
-
-        @return: True if the server is ready, False otherwise.
-        @rtype: bool
-        """
-        query_command = self.encode_data('CMD', 'is_server_ready')
-        self.client.sendall(query_command)
-        receiver = MessageReceiver()
-        ready = select.select([self.client], [], [], 10)
-        if ready[0]:
-            data = self.client.recv(1024)
-            if data:
-                messages = receiver.feed_data(data)
-                for message_type, payload in messages:
-                    if message_type == 'RESP':
-                        response = pickle.loads(payload)  # Unpickle the payload
-                        return response == 'yes'
-        return False
