@@ -1,3 +1,4 @@
+# server_manager.py
 """
 Server Manager GUI for Monitoring and Managing Server Status
 

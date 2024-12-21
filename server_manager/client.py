@@ -1,3 +1,4 @@
+# client.py
 """
 Socket Client Module for Connecting and Communicating with a Server
 

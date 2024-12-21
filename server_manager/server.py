@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+# server.py
 """
 Server System for Handling Client and Management Connections
 
