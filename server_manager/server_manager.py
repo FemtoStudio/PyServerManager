@@ -31,7 +31,9 @@ disconnecting clients or shutting down the server.
   blocking the main GUI thread.
 """
 
-
+import argparse
+import base64
+import json
 import pickle
 import socket
 import struct
@@ -65,6 +67,7 @@ class StatusUpdateThread(QtCore.QThread):
     - 'clients': A list of connected client addresses.
     - 'queue_length': The length of the server's request queue.
     """
+
     def __init__(self, host, port):
         super().__init__()
         self.host = host
@@ -160,10 +163,14 @@ class ServerManager(QtWidgets.QMainWindow):
                                             communication and status updates.
         is_connected (bool): Indicates if the GUI is connected to the server.
     """
-    def __init__(self):
+
+    def __init__(self, default_host="localhost", default_port=5051):
         """
-         Initializes the ServerManager window and sets up the UI elements.
-         """
+        Initializes the ServerManager window and sets up the UI elements.
+
+        :param default_host: Host to pre-fill in the GUI text field.
+        :param default_port: Port to pre-fill in the GUI text field.
+        """
         super().__init__()
 
         self.setWindowTitle("Server Manager")
@@ -179,9 +186,9 @@ class ServerManager(QtWidgets.QMainWindow):
         # Connection settings
         self.connection_layout = QtWidgets.QHBoxLayout()
         self.host_label = QtWidgets.QLabel("Host:")
-        self.host_input = QtWidgets.QLineEdit("localhost")
+        self.host_input = QtWidgets.QLineEdit(str(default_host))
         self.port_label = QtWidgets.QLabel("Port:")
-        self.port_input = QtWidgets.QLineEdit("5051")
+        self.port_input = QtWidgets.QLineEdit(str(default_port))
         self.connect_button = QtWidgets.QPushButton("Connect")
         self.connection_layout.addWidget(self.host_label)
         self.connection_layout.addWidget(self.host_input)
@@ -393,8 +400,45 @@ class ServerManager(QtWidgets.QMainWindow):
         event.accept()
 
 
+def parse_args():
+    """
+    Parse command-line arguments for optional host/port or --encoded-args.
+    Returns (host, port).
+    """
+    parser = argparse.ArgumentParser(description="Server Manager GUI")
+    parser.add_argument("--host", default=None, help="Optional host for server manager")
+    parser.add_argument("--port", type=int, default=None, help="Optional port for server manager")
+    parser.add_argument("--encoded-args", help="Optional base64-encoded JSON with 'host' and 'port' keys.")
+
+    args, unknown = parser.parse_known_args()
+
+    # If --encoded-args is provided, decode it and override host/port
+    if args.encoded_args:
+        try:
+            decoded = base64.b64decode(args.encoded_args).decode('utf-8')
+            obj = json.loads(decoded)
+            # If 'host' or 'port' exist in obj, override
+            if 'host' in obj:
+                args.host = obj['host']
+            if 'port' in obj:
+                args.port = obj['port']
+        except Exception as e:
+            print(f"Warning: Could not parse --encoded-args: {e}")
+
+    # Fall back to defaults if not supplied
+    final_host = args.host if args.host else "localhost"
+    final_port = args.port if args.port else 5051
+    return final_host, final_port
+
+
 if __name__ == '__main__':
+    host, port = parse_args()
+
     app = QtWidgets.QApplication(sys.argv)
-    manager = ServerManager()
+    manager = ServerManager(default_host=host, default_port=port)
     manager.show()
     sys.exit(app.exec())
+    # app = QtWidgets.QApplication(sys.argv)
+    # manager = ServerManager()
+    # manager.show()
+    # sys.exit(app.exec())

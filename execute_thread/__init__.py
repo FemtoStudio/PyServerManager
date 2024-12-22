@@ -1,4 +1,4 @@
-from PyServerManager.execute_thread.execute_manager import ExecuteThread, ExecuteThreadManager
+from .execute_manager import ExecuteThread, ExecuteThreadManager
 
 def main():
 
@@ -9,7 +9,7 @@ def main():
     }
 
     python_exe = r'E:\ai_projects\ai_portal\.venv\Scripts\python.exe'  # Adjust to your Python executable path
-    script_path = r'/execute_thread/test_scripts/test_script.py'  # Adjust to your script path
+    script_path = r'test_scripts/test_script.py'  # Adjust to your script path
     pre_cmd = 'echo Starting execution...'
     post_cmd = 'echo Execution finished.'
     export_env = {'MY_VAR': 'value'}
@@ -18,8 +18,6 @@ def main():
     manager = ExecuteThreadManager(
         python_exe=python_exe,
         script_path=script_path,
-        pre_cmd=pre_cmd,
-        post_cmd=post_cmd,
         export_env=export_env,
         custom_activation_script=custom_activation_script
     )

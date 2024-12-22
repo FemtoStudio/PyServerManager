@@ -53,12 +53,13 @@ def client_thread_function(client_id, test_data):
 
 
 if __name__ == '__main__':
-    from PyServerManager.server_manager.client import SocketClient
-    from PyServerManager.server_manager.server import SocketServer
+    from client import SocketClient
+    from server import SocketServer
 
     # Start the server
     server = SocketServer(port=5050, data_handler=data_handler)
-    server.run_server(return_response_data=True)
+    # server.run_server(return_response_data=True)
+    server.start_accepting_clients(return_response_data=True)
     time.sleep(1)  # Give the server a moment to start
 
     # Prepare test data for multiple clients
