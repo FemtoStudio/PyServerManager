@@ -17,6 +17,7 @@ setuptools.setup(
     install_requires=[
         "PySide6>=6.0.0",
         "numpy",
+        "tqdm",
         "psutil",
     ],
     entry_points={

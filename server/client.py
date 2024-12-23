@@ -89,9 +89,10 @@ class SocketClient(ServerClientBase):
         try:
             self.status = 'Sending Data'
             encoded_data = self.encode_data('DATA', data)
+            print(encoded_data)
             self.client.sendall(encoded_data)
             self.status = 'Waiting for Response'
-            self.logger.debug('Data sent, waiting for response with timeout {}'.format(timeout))
+            self.logger.debug(f'Data sent, waiting for response with timeout {timeout}')
             receiver = MessageReceiver()
             self.client.settimeout(timeout)
             data = self.client.recv(4096)
@@ -282,7 +283,7 @@ class SocketClient(ServerClientBase):
         while not self.is_client_connected:
             connected = self.connect_to_server()
             if connected:
-                self.logger.info(f"Successfully connected to server at {self.host}:{self.port}")
+                # self.logger.info(f"Successfully connected to server at {self.host}:{self.port}")
                 break
             else:
                 if max_retries is not None and retries >= max_retries:

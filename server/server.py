@@ -571,7 +571,7 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
         @param data_handler: Function to handle incoming client data (optional).
         @param return_response_data: Flag to determine if responses should be sent back to clients.
         """
-        self.logger.info(f"Server starting on port {self.port}")
+        self.logger.info(f"Server starting on port {self.host}:{self.port} and accepting clients...")
         self.data_handler = data_handler or self.data_handler
         self.return_response_data = return_response_data
 
@@ -723,39 +723,39 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
             except Exception as e:
                 self.logger.error(f"Error processing request: {e}")
 
-    def receive_data(self, conn, addr, data_handler=None, return_response_data=False):
-        self.logger.debug(f"Inside receive_data for {addr}.")
-        self.logger.debug(f"return_response_data:{return_response_data}, data_handler:{data_handler}")
-        receiver = MessageReceiver()
-        while True:
-            try:
-                data = conn.recv(4096)
-                if not data:
-                    self.logger.debug(f"No data received from {addr}, closing connection.")
-                    break
-                messages = receiver.feed_data(data)
-                for message_type, payload in messages:
-                    # Enqueue the request
-                    request_info = {
-                        'conn': conn,
-                        'addr': addr,
-                        'message_type': message_type,
-                        'payload': payload,
-                        'data_handler': data_handler,
-                        'return_response_data': return_response_data,
-                    }
-                    self.request_queue.put(request_info)
-            except ConnectionResetError:
-                self.logger.warning(f"Connection reset by {addr}.")
-                break
-            except OSError as e:
-                if e.errno == 10053:
-                    self.logger.warning(f"Connection aborted by {addr}.")
-                    break
-                else:
-                    self.logger.error(f"OSError occurred: {e}")
-                    break
-            except Exception as e:
-                self.logger.error(f"An unexpected error occurred: {e}")
-                break
-        self.close_connection(addr)
+    # def receive_data(self, conn, addr, data_handler=None, return_response_data=False):
+    #     self.logger.debug(f"Inside receive_data for {addr}.")
+    #     self.logger.debug(f"return_response_data:{return_response_data}, data_handler:{data_handler}")
+    #     receiver = MessageReceiver()
+    #     while True:
+    #         try:
+    #             data = conn.recv(4096)
+    #             if not data:
+    #                 self.logger.debug(f"No data received from {addr}, closing connection.")
+    #                 break
+    #             messages = receiver.feed_data(data)
+    #             for message_type, payload in messages:
+    #                 # Enqueue the request
+    #                 request_info = {
+    #                     'conn': conn,
+    #                     'addr': addr,
+    #                     'message_type': message_type,
+    #                     'payload': payload,
+    #                     'data_handler': data_handler,
+    #                     'return_response_data': return_response_data,
+    #                 }
+    #                 self.request_queue.put(request_info)
+    #         except ConnectionResetError:
+    #             self.logger.warning(f"Connection reset by {addr}.")
+    #             break
+    #         except OSError as e:
+    #             if e.errno == 10053:
+    #                 self.logger.warning(f"Connection aborted by {addr}.")
+    #                 break
+    #             else:
+    #                 self.logger.error(f"OSError occurred: {e}")
+    #                 break
+    #         except Exception as e:
+    #             self.logger.error(f"An unexpected error occurred: {e}")
+    #             break
+    #     self.close_connection(addr)

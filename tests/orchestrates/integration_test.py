@@ -7,7 +7,7 @@ import os
 import sys
 import time
 import logging
-from execute_thread.execute_manager import ExecuteThreadManager
+from core.execute_manager import ExecuteThreadManager
 
 
 def main():
@@ -21,7 +21,7 @@ def main():
     this_dir = os.path.dirname(os.path.abspath(__file__))
     server_script = os.path.join(this_dir, "server_runner.py")
     client_script = os.path.join(this_dir, "client_runner.py")
-    gui_script = os.path.join(this_dir, "..", "..", "server_manager", "server_manager.py")
+    gui_script = os.path.join(this_dir, "..", "..", "server", "server_manager.py")
     # ^ Adjust the path to wherever your `server_manager.py` is located
     #   For example, if "server_manager.py" is at:
     #   PyServerManager/server_manager/server_manager.py,
@@ -88,7 +88,7 @@ def main():
 
     # (At this point, the GUI is still running in a separate window, and the server is
     #  still running inline.)
-
+    
     # 8) Terminate the server
     #    If we want to forcibly kill the server (and the GUI if desired), do manager.terminate_all().
     #    If you'd rather do a graceful server shutdown, you'd send a 'quit' command from a client.

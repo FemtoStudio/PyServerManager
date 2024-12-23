@@ -2,8 +2,8 @@ import unittest
 import threading
 import time
 import numpy as np
-from server_manager.server import SocketServer
-from server_manager.client import SocketClient
+from server.server import SocketServer
+from server.client import SocketClient
 
 import logging
 

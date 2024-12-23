@@ -1,7 +1,7 @@
 import unittest
 import threading
 import time
-from server_manager.server import SocketServer
+from server.server import SocketServer
 
 # Mock logger for testing purposes
 import logging
@@ -40,7 +40,7 @@ class TestSocketServer(unittest.TestCase):
 
     def test_server_client_communication(self):
         # Import the client class
-        from server_manager.client import SocketClient
+        from server.client import SocketClient
 
         # Create a client and connect to the server
         client = SocketClient(host='localhost', port=self.port)

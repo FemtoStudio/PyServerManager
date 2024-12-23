@@ -10,7 +10,7 @@ import json
 import logging
 import time
 import sys
-from server_manager.server import SocketServer
+from server.server import SocketServer
 
 # If you need NumPy or other imports, do them here
 import numpy as np

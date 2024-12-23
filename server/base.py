@@ -3,11 +3,13 @@ import pickle
 import socket
 import struct
 import threading
+
+from core.logger import logger
 import logging
 # Configure logging
-logging.basicConfig(level=logging.INFO)  # Configure basic logging
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+# logger.setLevel(logging.INFO)
+# logger = logging.getLogger(__name__)
+# logger.setLevel(logging.INFO)
 
 
 

@@ -8,7 +8,7 @@ def launch_server(args):
     """
     Launch the server on the specified host and ports.
     """
-    from server_manager.server import SocketServer  # Import your server class
+    from server.server import SocketServer  # Import your server class
     import time
 
     # Create and start the server
@@ -36,7 +36,7 @@ def launch_gui(args):
     """
     import sys
     from PySide6.QtWidgets import QApplication
-    from server_manager.server_manager import ServerManager
+    from server.server_manager import ServerManager
 
     app = QApplication(sys.argv)
     manager = ServerManager()

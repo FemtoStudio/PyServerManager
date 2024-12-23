@@ -11,7 +11,7 @@ import logging
 import numpy as np
 import sys
 import time
-from server_manager.client import SocketClient
+from server.client import SocketClient
 
 
 def main():

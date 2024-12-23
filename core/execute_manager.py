@@ -1,5 +1,4 @@
 import base64
-import json
 import logging
 import os
 import platform
@@ -9,13 +8,54 @@ import subprocess
 import sys
 import threading
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List, Callable
+from typing import Optional, List, Callable
 
 import psutil
 
 # Default logger if none is provided
 DEFAULT_LOGGER = logging.getLogger(__name__)
 DEFAULT_LOGGER.setLevel(logging.INFO)
+
+import json
+from typing import Any, Dict
+
+
+def _dict_to_cli_args(args_dict: Dict[str, Any]) -> str:
+    """
+    Converts a dict of {key: value} into a string of CLI args like:
+      --key1 "value1" --key2 "value2"
+
+    1) If the value is a dict or list, we JSON-serialize it (recursively).
+    2) If it already is a string/number/bool/None, we convert it to a string directly.
+    3) We then escape any double quotes to avoid shell parsing issues.
+    4) Finally, we build a single string of arguments in the form:
+         --key "serialized_value"
+       separated by spaces.
+
+    Example:
+      args_dict = {
+          "name": "My Item",
+          "params": {"threshold": 0.75, "layers": [1, 2, 3]},
+          "debug": True
+      }
+      result -> '--name "My Item" --params "{\\"threshold\\": 0.75, \\"layers\\": [1, 2, 3]}" --debug "True"'
+    """
+    parts = []
+    for k, v in args_dict.items():
+        # If the value is a dict or list, let's JSON-serialize it
+        if isinstance(v, (dict, list)):
+            serialized = json.dumps(v)
+        else:
+            # Convert scalars or None to string
+            serialized = str(v)
+
+        # Escape any double quotes inside the serialized string
+        escaped = serialized.replace('"', '\\"')
+
+        # Build the final argument piece
+        parts.append(f'--{k} "{escaped}"')
+
+    return " ".join(parts)
 
 
 class BaseExecutor(ABC):
@@ -97,14 +137,33 @@ class BaseExecutor(ABC):
             self.logger.exception(f"Failed to decode output block: {e}")
             return None
 
+    def stream_output_lines(self, stream):
+        """
+        Utility to read lines from a stream until EOF, logging them as we go.
+        """
+        output_lines = []
+        while True:
+            line = stream.readline()
+            if not line:
+                break
+            self.logger.info(line.rstrip('\n'))
+            output_lines.append(line)
+        return output_lines
+
     @abstractmethod
-    def build_command(self, pre_cmd: Optional[str], post_cmd: Optional[str], args_dict: Dict) -> str:
+    def build_command(
+            self,
+            pre_cmd: Optional[str],
+            post_cmd: Optional[str],
+            args_dict: Dict,
+            encode_args: bool = True
+    ) -> str:
         """
         Construct the final shell command string, e.g.:
           1) optional activation script
           2) pre_cmd
           3) environment sets/exports
-          4) the main python call with --encoded-args
+          4) the main python call (either --encoded-args or normal CLI)
           5) post_cmd
         """
 
@@ -114,7 +173,6 @@ class BaseExecutor(ABC):
         Execute inline (capture output line-by-line), but do NOT wait for the process
         prior to returning—so we can terminate mid-run. Instead, read lines in a loop,
         store them, then call proc.wait() after the loop ends.
-
         Returns (proc, exit_code, combined_output).
         """
 
@@ -130,26 +188,23 @@ class BaseExecutor(ABC):
         OS-specific logic to kill a running process and its children.
         """
 
-    def stream_output_lines(self, stream):
-        output_lines = []
-        while True:
-            line = stream.readline()
-            if not line:
-                break
-            self.logger.info(line.rstrip('\n'))
-            output_lines.append(line)
-        return output_lines
-
 
 class WindowsExecutor(BaseExecutor):
     """
     Executor for Windows.
     """
 
-    def build_command(self, pre_cmd: Optional[str], post_cmd: Optional[str], args_dict: Dict) -> str:
+    def build_command(
+            self,
+            pre_cmd: Optional[str],
+            post_cmd: Optional[str],
+            args_dict: Dict,
+            encode_args: bool = True
+    ) -> str:
         """
-        On Windows, chain with ' & '.  Use 'call "<script>.bat"' if activation_script is set.
+        On Windows, chain with ' & '. Use 'call "<script>.bat"' if activation_script is set.
         Also 'set KEY=VAL' for environment variables.
+        If encode_args=True, we do --encoded-args. Else we do normal CLI arguments.
         """
         lines = []
 
@@ -165,9 +220,15 @@ class WindowsExecutor(BaseExecutor):
         for k, v in self.env_vars.items():
             lines.append(f'set {k}={v}')
 
-        # Main python call
-        encoded_args = self.base64_encode_args(args_dict)
-        main_py = f'"{self.python_exe}" "{self.script_path}" --encoded-args "{encoded_args}"'
+        if encode_args:
+            # base64 approach
+            encoded_str = self.base64_encode_args(args_dict)
+            main_py = f'"{self.python_exe}" "{self.script_path}" --encoded-args "{encoded_str}"'
+        else:
+            # normal args
+            arg_string = _dict_to_cli_args(args_dict)
+            main_py = f'"{self.python_exe}" "{self.script_path}" {arg_string}'
+
         lines.append(main_py)
 
         # Post-cmd
@@ -183,8 +244,15 @@ class WindowsExecutor(BaseExecutor):
         We'll only do proc.wait() after reading lines, so we can kill early if needed.
         """
         env = self.create_env()
-        cmd_print = final_cmd.rsplit('-encoded-args', 1)[0] + '-encoded-args ...'
-        self.logger.info(f"[WindowsExecutor] inline command:\n{cmd_print}\n")
+
+        # Just for logging, redacting base64
+        log_cmd = final_cmd
+        if "--encoded-args" in log_cmd:
+            # Redact after the = sign for cleanliness
+            # or just do a simple approach:
+            log_cmd = log_cmd.rsplit('--encoded-args', 1)[0] + '--encoded-args ...'
+
+        self.logger.info(f"[WindowsExecutor] inline command:\n{log_cmd}\n")
 
         proc = subprocess.Popen(
             final_cmd,
@@ -198,7 +266,7 @@ class WindowsExecutor(BaseExecutor):
 
         output_lines = self.stream_output_lines(self.proc.stdout)
 
-        # if the proc got terminated nothing to wait for
+        # if the proc got terminated, self.proc would be set to None
         if self.proc is None:
             return None, None, ""
         # Only after no more lines do we .wait() for final returncode
@@ -213,8 +281,13 @@ class WindowsExecutor(BaseExecutor):
         """
         env = self.create_env()
         cmd_for_window = f'start /WAIT cmd.exe /k "{final_cmd}"'
-        cmd_print = final_cmd.rsplit('-encoded-args', 1)[0] + '-encoded-args ...'
-        self.logger.info(f"[WindowsExecutor] new terminal:\n{cmd_print}\n")
+
+        log_cmd = cmd_for_window
+        if "--encoded-args" in log_cmd:
+            log_cmd = log_cmd.rsplit('--encoded-args', 1)[0] + '--encoded-args ...'
+
+        self.logger.info(f"[WindowsExecutor] new terminal:\n{log_cmd}\n")
+
         subprocess.Popen(
             cmd_for_window,
             shell=True,
@@ -246,10 +319,17 @@ class UnixExecutor(BaseExecutor):
     Executor for Linux / macOS.
     """
 
-    def build_command(self, pre_cmd: Optional[str], post_cmd: Optional[str], args_dict: Dict) -> str:
+    def build_command(
+            self,
+            pre_cmd: Optional[str],
+            post_cmd: Optional[str],
+            args_dict: Dict,
+            encode_args: bool = True
+    ) -> str:
         """
         On Unix, we can chain lines with '\n'. Use 'source "<script>.sh"' if activation_script is set.
         Also 'export KEY="VAL"' for environment variables.
+        If encode_args=True, we do --encoded-args. Else we do normal CLI arguments.
         """
         lines = []
 
@@ -262,8 +342,15 @@ class UnixExecutor(BaseExecutor):
         for k, v in self.env_vars.items():
             lines.append(f'export {k}="{v}"')
 
-        encoded_args = self.base64_encode_args(args_dict)
-        main_py = f'"{self.python_exe}" "{self.script_path}" --encoded-args "{encoded_args}"'
+        if encode_args:
+            # base64 approach
+            encoded_str = self.base64_encode_args(args_dict)
+            main_py = f'"{self.python_exe}" "{self.script_path}" --encoded-args "{encoded_str}"'
+        else:
+            # normal args
+            arg_string = _dict_to_cli_args(args_dict)
+            main_py = f'"{self.python_exe}" "{self.script_path}" {arg_string}'
+
         lines.append(main_py)
 
         if post_cmd:
@@ -272,13 +359,13 @@ class UnixExecutor(BaseExecutor):
         return "\n".join(lines)
 
     def run_inline(self, final_cmd: str):
-        """
-        Start /bin/bash, do line-by-line reading from stdout,
-        store proc in case we want to kill it mid-run. Wait after reading lines.
-        """
         env = self.create_env()
-        cmd_print = final_cmd.rsplit('-encoded-args', 1)[0] + '-encoded-args ...'
-        self.logger.info(f"[UnixExecutor] inline:\n{cmd_print}\n")
+
+        # Just for logging, redacting base64
+        log_cmd = final_cmd
+        if "--encoded-args" in log_cmd:
+            log_cmd = log_cmd.rsplit('--encoded-args', 1)[0] + '--encoded-args ...'
+        self.logger.info(f"[UnixExecutor] inline:\n{log_cmd}\n")
 
         proc = subprocess.Popen(
             ["/bin/bash"],
@@ -296,30 +383,27 @@ class UnixExecutor(BaseExecutor):
 
         output_lines = self.stream_output_lines(self.proc.stdout)
 
-        # if the proc got terminated nothing to wait for
+        # if the proc got terminated, self.proc would be set to None
         if self.proc is None:
             return None, None, ""
 
-        # Now wait for the child process to fully exit
         self.proc.wait()
         exit_code = self.proc.returncode
         return self.proc, exit_code, "".join(output_lines)
 
     def run_in_terminal(self, final_cmd: str):
-        """
-        e.g. gnome-terminal -- bash -c '<final_cmd>; exec bash'
-        """
         env = self.create_env()
         emulator = self._detect_terminal_emulator()
-        self.logger.info(f"[UnixExecutor] new terminal: {emulator}")
-        cmd_print = final_cmd.rsplit('-encoded-args', 1)[0] + '-encoded-args ...'
-        full_cmd = [emulator, "--", "bash", "-c", f'{cmd_print}; exec bash']
+
+        log_cmd = final_cmd
+        if "--encoded-args" in log_cmd:
+            log_cmd = log_cmd.rsplit('--encoded-args', 1)[0] + '--encoded-args ...'
+        self.logger.info(f"[UnixExecutor] new terminal: {emulator}\nCmd:\n{log_cmd}")
+
+        full_cmd = [emulator, "--", "bash", "-c", f'{final_cmd}; exec bash']
         subprocess.Popen(full_cmd, env=env)
 
     def terminate_process(self, proc: subprocess.Popen) -> None:
-        """
-        Kill the process group (pgid) with SIGTERM.
-        """
         if self.proc and self.proc.pid:
             pgid = os.getpgid(self.proc.pid)
             self.logger.info(f"[UnixExecutor] terminating PGID={pgid} for PID={self.proc.pid}")
@@ -349,7 +433,8 @@ class ExecuteThread(threading.Thread):
             pre_cmd: Optional[str] = None,
             post_cmd: Optional[str] = None,
             open_new_terminal: bool = False,
-            callback: Optional[Callable] = None
+            callback: Optional[Callable] = None,
+            encode_args: bool = True
     ):
         super().__init__()
         self.executor = executor
@@ -358,6 +443,8 @@ class ExecuteThread(threading.Thread):
         self.post_cmd = post_cmd
         self.open_new_terminal = open_new_terminal
         self.callback = callback
+
+        self.encode_args = encode_args  # NEW: if False => pass normal CLI args
 
         self.exit_code: Optional[int] = None
         self.output: str = ""
@@ -378,7 +465,8 @@ class ExecuteThread(threading.Thread):
             self._cmd = self.executor.build_command(
                 pre_cmd=self.pre_cmd,
                 post_cmd=self.post_cmd,
-                args_dict=self.args
+                args_dict=self.args,
+                encode_args=self.encode_args
             )
         return self._cmd
 
@@ -399,7 +487,9 @@ class ExecuteThread(threading.Thread):
                 self.proc = proc
                 self.exit_code = exit_code
                 self.output = captured
-                self.parsed_output = self.executor.parse_encoded_output(self.output)
+                # If we used encode_args=True, parse for embedded JSON
+                if self.encode_args:
+                    self.parsed_output = self.executor.parse_encoded_output(self.output)
 
         except Exception as e:
             self.logger.exception("Error in ExecuteThread.run()")
@@ -417,7 +507,6 @@ class ExecuteThread(threading.Thread):
         If inline, kill the process group or parent+children.
         If new_terminal, we don't store a handle, so we can't forcibly close it from here.
         """
-        # if self.proc and not self.open_new_terminal:
         self.executor.terminate_process(self.proc)
 
 
@@ -469,6 +558,7 @@ class ExecuteThreadManager:
             post_cmd: Optional[str] = None,
             open_new_terminal: bool = False,
             callback: Optional[Callable] = None,
+            encode_args: bool = True,  # NEW param
             # optional overrides
             python_exe: Optional[str] = None,
             script_path: Optional[str] = None,
@@ -477,6 +567,7 @@ class ExecuteThreadManager:
     ) -> ExecuteThread:
         """
         Creates a new ExecuteThread. Optionally overrides python_exe/script_path/export_env/etc.
+        If encode_args=False, we won't do base64 encoding, but pass normal CLI args.
         """
         # If user provided overrides, build a fresh Executor just for this thread
         if any([python_exe, script_path, export_env, custom_activation_script]):
@@ -513,7 +604,8 @@ class ExecuteThreadManager:
             pre_cmd=pre_cmd,
             post_cmd=post_cmd,
             open_new_terminal=open_new_terminal,
-            callback=final_callback
+            callback=final_callback,
+            encode_args=encode_args
         )
         self.threads.append(thread)
         return thread
@@ -557,36 +649,34 @@ def example_usage():
         custom_logger=console_logger
     )
 
-    # We'll build a thread that runs inline
-    t_inline = manager.get_thread(
-        args={"myArg": 123},
+    # 1) Example using encode_args=True (the default)
+    t_encoded = manager.get_thread(
+        args={"myArg": 123, "anotherKey": "hello"},
         pre_cmd="echo PRE_CMD",
         post_cmd="echo POST_CMD",
-        open_new_terminal=False
+        open_new_terminal=False,
+        encode_args=True
     )
+    print("Encoded CMD:\n", t_encoded.cmd)
+    t_encoded.start()
+    t_encoded.join()
+    print("Output:\n", t_encoded.output)
+    print("Parsed Output (since encode_args=True):\n", t_encoded.parsed_output)
 
-    # We can see the final shell command
-    print("Inline CMD:\n", t_inline.cmd)
-
-    # Start it
-    t_inline.start()
-
-    # Optionally, you could terminate mid-run:
-    # manager.terminate_all()
-
-    # Wait for it to finish
-    t_inline.join()
-    print("Thread Output:", t_inline.output)
-    print("Parsed Output:", t_inline.parsed_output)
+    # 2) Example using encode_args=False => pass as normal CLI arguments
+    t_normal = manager.get_thread(
+        args={"myArg": 999, "foo": "bar with spaces"},
+        open_new_terminal=True,
+        encode_args=False
+    )
+    print("Normal Args CMD:\n", t_normal.cmd)
+    t_normal.start()
+    t_normal.join()
+    print("Output:\n", t_normal.output)
+    print("Parsed Output (encode_args=False => None):\n", t_normal.parsed_output)
 
     # Clean up done threads
     manager.clean_up_threads()
-
-    # Example new terminal usage
-    t_term = manager.get_thread(args={"msg": "hello from new terminal"}, open_new_terminal=True)
-    print("Terminal CMD:\n", t_term.cmd)
-    t_term.start()
-    t_term.join()
 
 
 if __name__ == "__main__":
