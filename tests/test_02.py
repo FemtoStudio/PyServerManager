@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 
-from server.client import SocketClient
+from PyServerManager.server.client import SocketClient
 client = SocketClient(host='127.0.0.1', port=62003)
 client.attempting_to_connect()
 

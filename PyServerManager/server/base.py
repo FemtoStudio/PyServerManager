@@ -4,13 +4,13 @@ import socket
 import struct
 import threading
 
-from core.logger import logger
-import logging
+from PyServerManager.core.logger import logger
+
+
 # Configure logging
 # logger.setLevel(logging.INFO)
 # logger = logging.getLogger(__name__)
 # logger.setLevel(logging.INFO)
-
 
 
 class ServerClientBase:

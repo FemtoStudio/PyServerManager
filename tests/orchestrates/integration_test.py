@@ -8,7 +8,10 @@ import sys
 import time
 import logging
 from core.execute_manager import ExecuteThreadManager
+from server.client import SocketClient
 
+HOST = '127.0.0.1'
+PORT = SocketClient.find_available_port()
 
 def main():
     logger = logging.getLogger("integration_test")
@@ -40,8 +43,8 @@ def main():
 
     # 4) Start the server (inline)
     server_args = {
-        "port": 5050,
-        "host": "localhost"
+        "port": PORT,
+        "host": HOST
     }
     server_thread = manager.get_thread(
         args=server_args,
@@ -58,7 +61,7 @@ def main():
     client_threads = []
     for i in range(num_clients):
         client_thread = manager.get_thread(
-            args={"host": "localhost", "port": 5050, "client-id": i},
+            args={"host": HOST, "port": PORT, "client-id": i},
             script_path=client_script,   # override to run the client
             open_new_terminal=False
         )
@@ -71,7 +74,7 @@ def main():
     #    "localhost:5050", depending on how you set up your server. If your server
     #    management port is 5051, you can manually change it in the GUI's text fields.
     gui_thread = manager.get_thread(
-        args={},                  # We’re not passing base64-args here;
+        args={"host": HOST, "port": PORT},                  # We’re not passing base64-args here;
                                   # you can modify server_manager.py to parse them if desired
         script_path=gui_script,   # override to run the GUI
         open_new_terminal=True    # Launch in a new console/terminal window

@@ -558,7 +558,7 @@ class ExecuteThreadManager:
             post_cmd: Optional[str] = None,
             open_new_terminal: bool = False,
             callback: Optional[Callable] = None,
-            encode_args: bool = True,  # NEW param
+            encode_args: bool = True,
             # optional overrides
             python_exe: Optional[str] = None,
             script_path: Optional[str] = None,

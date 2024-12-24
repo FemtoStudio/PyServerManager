@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from core.logger import logger, dict_to_string
+from PyServerManager.core.logger import logger, dict_to_string
 
 
 # The TaskExecutor class is the base class for all executors.

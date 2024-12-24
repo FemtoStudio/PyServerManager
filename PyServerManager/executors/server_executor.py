@@ -1,15 +1,20 @@
 # server_executor.py
 import time
 
-from core.logger import logger, dict_to_string
-from executors.task_executor import TaskExecutor
-from server.server import SocketServer
+from PyServerManager.core.logger import dict_to_string
+from PyServerManager.executors.task_executor import TaskExecutor
+from PyServerManager.server.server import SocketServer
+
 
 class ServerExecutor(TaskExecutor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.port = self.args_dict.pop('port', SocketServer.find_available_port())
-        self.host = self.args_dict.pop('host', '127.0.0.1')
+        self.port = self.args_dict.pop('port', None)
+        self.host = self.args_dict.pop('host', None)
+        if self.port is None or self.host is None:
+            raise Exception("Port and host must be specified")
+
+        self.logger.info(f"Starting server: {self.host}:{self.port}")
         self.server = SocketServer(port=self.port, data_handler=self.live_run, host=self.host)
         self.server.start_accepting_clients(return_response_data=True)
         self.logger.info(f"Server started on port {self.server.host}:{self.server.port}")
@@ -38,7 +43,7 @@ if __name__ == '__main__':
     # lvl = executor.args_dict.get('logger_level', 20)
     # executor.logger.setLevel(int(lvl))
     print('Server should be running. Press Ctrl+C to quit.')
-
+    print(f"server active:{executor.server.active}")
     # Keep the script alive as long as the server is active
     try:
         while executor.server.active:

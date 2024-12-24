@@ -283,7 +283,7 @@ class SocketClient(ServerClientBase):
         while not self.is_client_connected:
             connected = self.connect_to_server()
             if connected:
-                # self.logger.info(f"Successfully connected to server at {self.host}:{self.port}")
+                self.logger.info(f"Successfully connected to server at {self.host}:{self.port}")
                 break
             else:
                 if max_retries is not None and retries >= max_retries:

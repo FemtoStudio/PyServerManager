@@ -1,16 +1,16 @@
 import os
 import sys
 
+# Adjust these imports based on your actual structure
+# 1) For launching the server:
+from PyServerManager.core.execute_manager import ExecuteThreadManager
+# 2) For your client to connect to the server:
+from PyServerManager.server.client import SocketClient
 # PySide6 imports
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QLineEdit, QPushButton, QTextEdit
 )
-# Adjust these imports based on your actual structure
-# 1) For launching the server:
-from core.execute_manager import ExecuteThreadManager
-# 2) For your client to connect to the server:
-from server.client import SocketClient
 
 HOST = '127.0.0.1'
 PORT = SocketClient.find_available_port()
@@ -105,7 +105,7 @@ def launch_server_via_execute_manager():
 
     python_exe = sys.executable  # or an explicit path
     script_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "executors", "server_executor.py")
+        os.path.join(os.path.dirname(__file__), "..", "..", 'PyServerManager', "executors", "server_executor.py")
     )
 
     manager = ExecuteThreadManager(
