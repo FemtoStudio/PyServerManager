@@ -89,7 +89,6 @@ class SocketClient(ServerClientBase):
         try:
             self.status = 'Sending Data'
             encoded_data = self.encode_data('DATA', data)
-            print(encoded_data)
             self.client.sendall(encoded_data)
             self.status = 'Waiting for Response'
             self.logger.debug(f'Data sent, waiting for response with timeout {timeout}')

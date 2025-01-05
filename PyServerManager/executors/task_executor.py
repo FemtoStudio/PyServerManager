@@ -85,6 +85,8 @@ class TaskExecutor:
             self.args_dict = json.loads(decoded_args)
         else:
             self.args_dict = {}
+        # <-- Destroy the parser so it won't get pickled
+        del self.parser
 
     def run(self):
         """

@@ -41,6 +41,7 @@ import queue
 import socket
 import threading
 import time
+import traceback
 
 from .base import ServerClientBase
 from .utils import MessageReceiver, SingletonMeta
@@ -669,7 +670,7 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
         """
         while self.active or not self.request_queue.empty():
             try:
-                request_info = self.request_queue.get(timeout=1)  # Add a timeout here
+                request_info = self.request_queue.get()  # Add a timeout here
                 conn = request_info['conn']
                 addr = request_info['addr']
                 message_type = request_info['message_type']
@@ -721,41 +722,4 @@ class SocketServer(ServerClientBase, metaclass=SingletonMeta):
                     break  # Exit the loop if the server is not active
                 continue  # Continue if active but queue is empty
             except Exception as e:
-                self.logger.error(f"Error processing request: {e}")
-
-    # def receive_data(self, conn, addr, data_handler=None, return_response_data=False):
-    #     self.logger.debug(f"Inside receive_data for {addr}.")
-    #     self.logger.debug(f"return_response_data:{return_response_data}, data_handler:{data_handler}")
-    #     receiver = MessageReceiver()
-    #     while True:
-    #         try:
-    #             data = conn.recv(4096)
-    #             if not data:
-    #                 self.logger.debug(f"No data received from {addr}, closing connection.")
-    #                 break
-    #             messages = receiver.feed_data(data)
-    #             for message_type, payload in messages:
-    #                 # Enqueue the request
-    #                 request_info = {
-    #                     'conn': conn,
-    #                     'addr': addr,
-    #                     'message_type': message_type,
-    #                     'payload': payload,
-    #                     'data_handler': data_handler,
-    #                     'return_response_data': return_response_data,
-    #                 }
-    #                 self.request_queue.put(request_info)
-    #         except ConnectionResetError:
-    #             self.logger.warning(f"Connection reset by {addr}.")
-    #             break
-    #         except OSError as e:
-    #             if e.errno == 10053:
-    #                 self.logger.warning(f"Connection aborted by {addr}.")
-    #                 break
-    #             else:
-    #                 self.logger.error(f"OSError occurred: {e}")
-    #                 break
-    #         except Exception as e:
-    #             self.logger.error(f"An unexpected error occurred: {e}")
-    #             break
-    #     self.close_connection(addr)
+                self.logger.exception(f"Error processing request: {e}")

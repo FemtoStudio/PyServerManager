@@ -1,29 +1,26 @@
 # base_user_server_executor.py
+
 import time
 import logging
-import sys
+import asyncio
 from pathlib import Path
+import traceback
 
 from PyServerManager.core.logger import SingletonLogger
-from PyServerManager.server.client import SocketClient
+from PyServerManager.async_server.async_pickle_client import AsyncPickleClient
 from PyServerManager.templates.base_user_task_executor import BaseUserTaskExecutor
 
 
 class BaseUserServerExecutor(BaseUserTaskExecutor):
     """
-    A specialized template class that runs a server script (via the ExecuteThreadManager)
-    and then optionally connects to it via SocketClient.
-
-    Usage Flow:
-      1) call run_server(...) -> spawns the server script as a background thread.
-      2) call connect_client_async(...) -> attempts to connect in another thread (non-blocking).
-      3) (Optionally) call send_data_to_server(...) to interact once connected.
-      4) (Optionally) open the PySide6 GUI with open_gui(...).
+    Spawns the AsyncPickleServer in a separate Python process
+    (via acync_server_executor.py) and manages a single event loop
+    in *this* process to run its AsyncPickleClient calls without
+    collisions.
     """
 
-    # By default, might point to your server_executor.py
     EXECUTOR_SCRIPT_PATH = str(
-        (Path(__file__).parent.parent / "executors" / "server_executor.py").resolve()
+        (Path(__file__).parent.parent / "executors" / "acync_server_executor.py").resolve()
     )
 
     def __init__(
@@ -33,167 +30,174 @@ class BaseUserServerExecutor(BaseUserTaskExecutor):
             env_vars: dict = None,
             logger: logging.Logger = None
     ):
-        # Reuse base init: sets up self.executor_manager, self.logger, etc.
         super().__init__(
             python_exe=python_exe,
             activation_script=activation_script,
             env_vars=env_vars,
             logger=logger or SingletonLogger.get_instance("BaseUserServerExecutor"),
         )
-        self.client = None  # We'll create a SocketClient as needed
+        self.client: AsyncPickleClient = None
         self.host = None
         self.port = None
-        self.management_port = None
 
-    def run_server(self, host="localhost", port=5050, management_port=5051, open_new_terminal=False):
-        """
-        Run the server in the background via the server_executor script.
+        # We maintain a single event loop to reuse across connect/send/shutdown
+        self._loop = None
 
-        :param host: Host/IP on which the server should listen
-        :param port: Port for client connections
-        :param management_port: (Optional) separate port for management
-        :param open_new_terminal: If True, spawns a new terminal window (no output captured)
-        :return: The ExecuteThread object running that server script
+    @property
+    def loop(self):
         """
-        # If your server_executor script expects normal CLI flags like --host, --port, etc.,
-        # we'll pass encode_args=False so they appear as such.
+        Ensure we have a single dedicated event loop for this executor.
+        Then set it as the current event loop on each call so that
+        StreamReader/Writer remain valid.
+        """
+        if self._loop is None:
+            self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        return self._loop
+
+    def run_server(self, host="localhost", port=5050, open_new_terminal=False):
+        """
+        Launch the AsyncPickleServer in a separate Python interpreter
+        using the ExecutorThreadManager. That separate process will block
+        inside its own asyncio loop until we shut it down.
+        """
         self.host = host
         self.port = port
-        self.management_port = management_port or self.port + 1
-        self.logger.info(f"Starting server on {host}:{port} (management on {management_port})...")
+        self.logger.info(f"Starting server on {host}:{port}...")
 
         args_dict = {
             "host": self.host,
             "port": self.port,
-            "management-port": self.management_port
         }
 
-        thread = self.execute(args_dict=args_dict, encode_args=True, open_new_terminal=open_new_terminal)
-        self.client = SocketClient(host=self.host, port=self.port)
-        self.client.attempting_to_connect(start_sleep=2)
+        # Fire up a new process
+        thread = self.execute(
+            args_dict=args_dict,
+            encode_args=True,
+            open_new_terminal=open_new_terminal
+        )
         return thread
 
-    def connect_client_async(
-            self,
-            host=None,
-            port=None,
-            start_sleep=1,
-            retry_delay=2,
-            max_retries=None
-    ):
+    def connect_client(self, start_sleep=2, retry_delay=2, max_retries=None):
         """
-        Initiate asynchronous attempts to connect to the server,
-        without blocking the main thread.
-
-        Internally calls SocketClient.attempting_to_connect(...),
-        which spawns a separate thread to keep trying until success
-        or max_retries is reached.
-
-        :param host: Host to connect
-        :param port: Port to connect
-        :param start_sleep: Seconds to wait before the first connection attempt
-        :param retry_delay: Seconds to wait between connection attempts
-        :param max_retries: How many times to attempt; None = infinite
-        :return: None
+        Synchronously create an AsyncPickleClient and attempt to connect
+        to the server in the *same* event loop as any subsequent calls.
         """
-        host = host or self.host
-        port = port or self.port
-        # Create the SocketClient if we haven't already
-        if self.client is None:
-            self.client = SocketClient(host=host, port=port)
-        else:
-            # If self.client is already created, set new host/port if needed
-            self.client.host = host
-            self.client.port = port
+        if self.client is not None and self.client.is_connected:
+            self.logger.info("Client is already connected.")
+            return
 
-        self.logger.info(
-            f"[AsyncClientConnect] Attempting to connect to {host}:{port} "
-            f"with start_sleep={start_sleep}, retry_delay={retry_delay}, max_retries={max_retries}"
-        )
-        # This does NOT block; it spawns a separate thread inside SocketClient
-        self.client.attempting_to_connect(
-            host=host,
-            port=port,
-            start_sleep=start_sleep,
-            retry_delay=retry_delay,
-            max_retries=max_retries
-        )
+        self.logger.info("Creating AsyncPickleClient and attempting connection...")
+        self.client = AsyncPickleClient(host=self.host, port=self.port, logger=self.logger)
 
-    def send_data_to_server(self, data, timeout=60):
+        async def _connect_flow():
+            await self.client.background_retry_connect(
+                start_sleep=start_sleep,
+                retry_delay=retry_delay,
+                max_retries=max_retries
+            )
+            if self.client.is_connected:
+                self.logger.info("Client connected successfully!")
+            else:
+                self.logger.warning("Client could not connect (timed out or user stopped).")
+
+        self.loop.run_until_complete(_connect_flow())
+
+    def send_data_to_server(self, data):
         """
-        Attempt to send data to the server via SocketClient.
-
-        :param data: (dict or any picklable)
-        :param timeout: how long to wait for the server's response
-        :return: response object from the server or None if failure
+        Synchronously send data (a dictionary, etc.) to the server
+        and get its response. Uses the same event loop as connect/shutdown.
         """
-        if not self.client or not self.client.is_client_connected:
-            self.logger.warning("No active client. Please call connect_client_async() (or connect) first.")
+        if not self.client or not self.client.is_connected:
+            self.logger.warning("No connected client to send data. Call connect_client first.")
             return None
 
+        async def _send_data_flow():
+            return await self.client.send_data(data)
+
         try:
-            response = self.client.attempt_to_send(data, timeout=timeout)
-            self.logger.info(f"Server response: {response}")
-            return response
+            return self.loop.run_until_complete(_send_data_flow())
+        except TimeoutError as te:
+            self.logger.error(f"Timeout waiting for connection: {te}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return None
         except Exception as e:
-            self.logger.error(f"Error sending data to server: {e}")
+            self.logger.error(f"Error in send_data_to_server: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return None
+
+    def shutdown_server(self):
+        """
+        Synchronously send the 'shutdown_server' command to the remote server process.
+        """
+        if not self.client or not self.client.is_connected:
+            self.logger.warning("No connected client, cannot send shutdown.")
+            return None
+
+        async def _shutdown_flow():
+            return await self.client.shutdown_server()
+
+        try:
+            resp = self.loop.run_until_complete(_shutdown_flow())
+            self.logger.info(f"Server shutdown response: {resp}")
+            return resp
+        except TimeoutError as te:
+            self.logger.error(f"Timeout waiting to send shutdown: {te}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error in shutdown_server: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
     def open_gui(self, host="localhost", management_port=5051):
-        """
-        (Optional) Launch the PySide6-based GUI for managing the server.
-        Typically you'd do: pyservermanager gui --host xxx --port yyy
-        But here's an example if you want to embed it in code.
-
-        NOTE: This blocks until the GUI closes, because QApplication.exec() is blocking.
-        """
-        try:
-            from PySide6.QtWidgets import QApplication
-            from PyServerManager.server.server_manager import ServerManager
-        except ImportError:
-            self.logger.error("PySide6 not installed. Cannot open server manager GUI.")
-            return
-
-        app = QApplication(sys.argv)
-        manager = ServerManager(default_host=host, default_port=management_port)
-        manager.show()
-        self.logger.info(f"Launching GUI for host={host}, management_port={management_port}")
-        sys.exit(app.exec())
+        pass
 
 
 if __name__ == "__main__":
     """
-    Quick test to confirm that BaseUserServerExecutor can:
-      1) Start the server
-      2) Connect a client (asynchronously)
-      3) Optionally send some data to check the response
+    Demo:
+      1) Start server on a separate process
+      2) Wait a bit for it to bind
+      3) Connect with client (same event loop used for all future calls)
+      4) Send test data
+      5) Shutdown server
     """
+    import random
+
     print("Running BaseUserServerExecutor as a standalone test...")
+
     tool = BaseUserServerExecutor()
-
-    # 1) Start the server in background
     HOST = "127.0.0.1"
-    PORT = SocketClient.find_available_port()
-    management_port = PORT + 1
-    print(f"Starting server on {HOST}:{PORT} (management on {PORT+1})...")
-    thread = tool.run_server(host=HOST, port=PORT, management_port=management_port, open_new_terminal=True)
-    print(
-        f"Server started. You can connect to it with SocketClient(host='{HOST}', port={PORT})."
-        f" (You can also use the GUI with tool.open_gui(host='{HOST}', management_port={PORT+1}))"
-    )
-    # thread.join()
-    # 3) Check if the client is connected
-    for i in range(10):
-        print(
-            f"Checking if client is connected... (attempt {i+1}/{10})",
-            end="\r" if i < 9 else "\n"
-        )
-        time.sleep(1)
-        if tool.client and tool.client.is_client_connected:
-            print("Client is connected! Let's send some test data.")
-            response = tool.send_data_to_server({"test": "Hello from base_user_server_executor!"})
-            print("Server responded:", response)
-        else:
-            print("Client did not connect within 10 seconds. Exiting.")
+    PORT = 12345
 
-    print("Test run complete. Check logs for server output and any responses.")
+    print(f"Launching server on {HOST}:{PORT} ...")
+    server_thread = tool.run_server(host=HOST, port=PORT, open_new_terminal=False)
+
+    # Give the new server process time to bind the port
+    time.sleep(2)
+
+    print("Attempting to connect client...")
+    tool.connect_client(start_sleep=10, retry_delay=2, max_retries=5)
+
+    if tool.client and tool.client.is_connected:
+        print("Client connected! Sending some test data now...")
+
+        test_payload = {
+            "numbers": [random.randint(1, 100) for _ in range(5)],
+            "message": "Hello from BaseUserServerExecutor!",
+        }
+
+        resp = tool.send_data_to_server(test_payload)
+        print("Server responded with:", resp)
+
+        print("Requesting server shutdown...")
+        shutdown_resp = tool.shutdown_server()
+        print("Shutdown response:", shutdown_resp)
+    else:
+        print("Client never connected. Exiting.")
+
+    print("Joining server thread...")
+    server_thread.join()
+
+    print("Done.")
