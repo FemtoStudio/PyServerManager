@@ -1,13 +1,14 @@
 # base_user_server_executor.py
-
-import time
-import logging
 import asyncio
-from pathlib import Path
+import logging
+import socket
+import threading
+import time
 import traceback
+from pathlib import Path
 
-from PyServerManager.core.logger import SingletonLogger
 from PyServerManager.async_server.async_pickle_client import AsyncPickleClient
+from PyServerManager.core.logger import SingletonLogger
 from PyServerManager.templates.base_user_task_executor import BaseUserTaskExecutor
 
 
@@ -55,30 +56,105 @@ class BaseUserServerExecutor(BaseUserTaskExecutor):
         asyncio.set_event_loop(self._loop)
         return self._loop
 
-    def run_server(self, host="localhost", port=5050, open_new_terminal=False):
+    def _check_server_reachable(self, host, port, timeout=1.0) -> bool:
         """
-        Launch the AsyncPickleServer in a separate Python interpreter
-        using the ExecutorThreadManager. That separate process will block
-        inside its own asyncio loop until we shut it down.
+        Returns True if something is listening on (host, port).
+        We do a simple socket connect test.
+        """
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            s.connect((host, port))
+            s.close()
+            return True
+        except (ConnectionRefusedError, socket.timeout, OSError):
+            return False
+
+    def run_server(self, host="localhost", port=5050, open_new_terminal=False, **kwargs):
+        """
+        Launch the AsyncPickleServer in a separate process (unless we detect
+        a server is already running on that port).
         """
         self.host = host
         self.port = port
-        self.logger.info(f"Starting server on {host}:{port}...")
 
+        # (A) Check if our own server object is alive
+        if getattr(self, "server_thread", None) and self.server_thread.is_alive():
+            if self.client and self.client.is_connected:
+                self.logger.warning("Server is already running; client is connected. Doing nothing.")
+                return
+            else:
+                self.logger.warning("Server seems to be running, but client not connected. Connecting now...")
+                self.connect_client()
+                return
+
+        # (B) Or check externally if some process is already bound
+        if self._check_server_reachable(host, port):
+            self.logger.warning(
+                f"Detected an existing process on {host}:{port}. "
+                f"Will attempt to connect as a client rather than starting a new server."
+            )
+            self.connect_client()
+            return
+
+        self.logger.info(f"Starting server on {host}:{port}...")
         args_dict = {
             "host": self.host,
             "port": self.port,
+            "open_in_new_terminal": open_new_terminal,
+            # ...
         }
-
-        # Fire up a new process
-        thread = self.execute(
+        args_dict.update(kwargs)
+        # Fire up a new process (or thread) via self.execute(...)
+        self.logger.info(f"Starting server in a new process...{args_dict}")
+        self.server_thread = self.execute(
             args_dict=args_dict,
             encode_args=True,
             open_new_terminal=open_new_terminal
         )
-        return thread
+        return self.server_thread
+
+    #
+    # def run_server(self, host="localhost", port=5050, open_new_terminal=False):
+    #     """
+    #     Launch the AsyncPickleServer in a separate Python interpreter
+    #     using the ExecutorThreadManager. That separate process will block
+    #     inside its own asyncio loop until we shut it down.
+    #     """
+    #     self.host = host
+    #     self.port = port
+    #     self.logger.info(f"Starting server on {host}:{port}...")
+    #
+    #     args_dict = {
+    #         "host": self.host,
+    #         "port": self.port,
+    #     }
+    #
+    #     # Fire up a new process
+    #     thread = self.execute(
+    #         args_dict=args_dict,
+    #         encode_args=True,
+    #         open_new_terminal=open_new_terminal
+    #     )
+    #     return thread
 
     def connect_client(self, start_sleep=2, retry_delay=2, max_retries=None):
+
+        # self._connect_client(
+        #     start_sleep=start_sleep,
+        #     retry_delay=retry_delay,
+        #     max_retries=max_retries)
+        if self.host is None:
+            self.logger.error("No host specified for client connection.")
+            return
+        if self.port is None:
+            self.logger.error("No port specified for client connection.")
+            return
+        self.client = AsyncPickleClient(host=self.host, port=self.port, logger=self.logger)
+
+        threading.Thread(target=self._connect_client, daemon=True, args=(start_sleep, retry_delay, max_retries)).start()
+
+    def _connect_client(self, start_sleep=2, retry_delay=2, max_retries=None):
         """
         Synchronously create an AsyncPickleClient and attempt to connect
         to the server in the *same* event loop as any subsequent calls.
@@ -88,7 +164,6 @@ class BaseUserServerExecutor(BaseUserTaskExecutor):
             return
 
         self.logger.info("Creating AsyncPickleClient and attempting connection...")
-        self.client = AsyncPickleClient(host=self.host, port=self.port, logger=self.logger)
 
         async def _connect_flow():
             await self.client.background_retry_connect(
@@ -117,6 +192,26 @@ class BaseUserServerExecutor(BaseUserTaskExecutor):
 
         try:
             return self.loop.run_until_complete(_send_data_flow())
+        except TimeoutError as te:
+            self.logger.error(f"Timeout waiting for connection: {te}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error in send_data_to_server: {e}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return None
+
+    def get_server_info(self):
+
+        if not self.client or not self.client.is_connected:
+            self.logger.warning("No connected client to send data. Call connect_client first.")
+            return None
+
+        async def _send_cmd_flow():
+            return await self.client.send_cmd("get_server_info")
+
+        try:
+            return self.loop.run_until_complete(_send_cmd_flow())
         except TimeoutError as te:
             self.logger.error(f"Timeout waiting for connection: {te}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")

@@ -10,6 +10,19 @@ class BaseAsyncPickle:
     over an asyncio StreamReader/StreamWriter.
     """
     logger = SingletonLogger.get_instance("PyServerManager")
+    _loop = None
+
+    @property
+    def loop(self):
+        """
+        Ensure we have a single dedicated event loop for this executor.
+        Then set it as the current event loop on each call so that
+        StreamReader/Writer remain valid.
+        """
+        if self._loop is None:
+            self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        return self._loop
 
     @staticmethod
     def find_available_port(host='localhost'):

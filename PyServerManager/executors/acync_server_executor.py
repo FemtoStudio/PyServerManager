@@ -1,4 +1,6 @@
+# acync_server_executor.py
 import asyncio
+import json
 import time
 
 # Import our new AsyncPickleServer
@@ -19,18 +21,31 @@ class ServerExecutor(TaskExecutor):
         self.host = self.args_dict.pop('host', '127.0.0.1')
         if self.port is None or self.host is None:
             raise Exception("Port and host must be specified")
+        self.data_workers = self.args_dict.pop('data_workers', 4)
+        self.cmd_workers = self.args_dict.pop('cmd_workers', 1)
+        self.server: AsyncPickleServer = None
 
-        self.logger.info(f"Creating AsyncPickleServer on {self.host}:{self.port}")
-
+    def setup_server(self, data_workers=None, cmd_workers=None):
+        data_workers = data_workers or self.data_workers
+        cmd_workers = cmd_workers or self.cmd_workers
+        self.logger.info(f"Creating AsyncPickleServer on {self.host}:{self.port} with {data_workers} workers")
+        # loop = asyncio.new_event_loop()
         # Create the async server, passing in our data handler
         # We'll define a custom "on_data" method that does the equivalent of "live_run"
         self.server = AsyncPickleServer(
             host=self.host,
             port=self.port,
             data_handler=self.on_data_handler,  # define below
-            data_workers=4,  # or however many worker threads you want for CPU-bound tasks
+            data_workers=data_workers,  # or however many worker threads you want for CPU-bound tasks
+            cmd_workers=cmd_workers,  # or however many worker threads you want for CPU-bound tasks
             logger=self.logger,
+            worker_init_fn=self.worker_init_fn
         )
+        # self.server.serve_forever(runner=None)
+        # self.main_entry()
+
+    def worker_init_fn(self):
+        return None
 
     def setup_parser(self):
         super().setup_parser()
@@ -57,48 +72,64 @@ class ServerExecutor(TaskExecutor):
         # Return a result object (the server will pickle and send it back to the client)
         return {"status": "OK", "msg": data_to_return}
 
-    async def run_async(self):
-        """
-        An async method that starts the server and runs forever (until stopped).
-        """
-        self.logger.info("Starting AsyncPickleServer... (awaiting start_server)")
-        await self.server.start_server()  # This will block (async) until server is stopped.
 
-    async def shutdown_async(self):
-        """
-        Gracefully stop the server.
-        """
-        await self.server.stop_server()
 
-    def main_entry(self):
-        """
-        This replaces the old "if __name__ == '__main__'" block's logic.
-        We'll run our event loop here.
-        """
-        print("Server should be running. Press Ctrl+C to quit.")
-        try:
-            # Run the async entry
-            asyncio.run(self.run_async())
-        except asyncio.exceptions.CancelledError:
-            print("server cancelled, shutting down server.")
-        except KeyboardInterrupt:
-            print("KeyboardInterrupt detected, shutting down server.")
-            # We can do another run to close down
-            try:
-                asyncio.run(self.shutdown_async())
-            except RuntimeError:
-                pass
-        print("Server script is now exiting.")
+def main():
+    """
+    Main entry point if running this script as `python acync_server_executor.py ...`.
+    This is where we:
+     1) Create the ServerExecutor
+     2) Apply arguments from the base class (host, port, logger_level, etc.)
+     3) setup_server() with the desired worker counts
+     4) Finally, call `serve_forever()` to block until user hits Ctrl+C
+    """
+    executor = ServerExecutor()
+
+    # The base class’s parser has run in `__init__` => we have `executor.args_dict`.
+    # Retrieve any arguments we want.
+    logger_level = int(executor.args_dict.get('logger_level', 20))
+    open_in_new_terminal = bool(executor.args_dict.get('open_in_new_terminal', False))
+    data_workers = int(executor.args_dict.get('data_workers', 4))
+    cmd_workers = int(executor.args_dict.get('cmd_workers', 1))
+
+    executor.logger.setLevel(logger_level)
+
+    executor.logger.info("=== Starting server from main() in acync_server_executor ===")
+    executor.logger.info(f" open_in_new_terminal = {open_in_new_terminal}")
+    executor.logger.info(f" data_workers         = {data_workers}")
+    executor.logger.info(f" cmd_workers          = {cmd_workers}")
+
+    # Prepare the server
+    executor.setup_server(data_workers=data_workers, cmd_workers=cmd_workers)
+
+    print('Server should be running after serve_forever(). Press Ctrl+C to quit.')
+
+    # serve_forever() will block until KeyboardInterrupt (Ctrl+C) or until
+    # the server is shut down from a remote 'shutdown_server' command.
+    try:
+        executor.server.serve_forever(runner=None)
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt detected. Stopping server...")
+        # If we get here, `serve_forever` might already do a graceful shutdown,
+        # but we can call it explicitly if we want.
+        asyncio.run(executor.server.stop_server())
+    print('Server script is now exiting.')
 
 
 if __name__ == '__main__':
-    # Create the executor
-    kwargs = {'port': AsyncPickleServer.find_available_port(), 'host': 'localhost'}
-    executor = ServerExecutor(kwargs)
-    executor.args_dict = kwargs
-    # Optionally adjust logger level
-    # lvl = executor.args_dict.get('logger_level', 20)
-    # executor.logger.setLevel(int(lvl))
-
-    # Now call the main_entry, which runs our asyncio loop
-    executor.main_entry()
+    executor = ServerExecutor()
+    print(f"args_dict: {json.dumps(executor.args_dict, indent=2)}")
+    lvl = executor.args_dict.get('logger_level', 20)
+    data_workers = executor.args_dict.get('data_workers', 1)
+    cmd_workers = executor.args_dict.get('cmd_workers', 1)
+    executor.logger.setLevel(int(lvl))
+    executor.setup_server(data_workers=data_workers, cmd_workers=cmd_workers)
+    executor.server.serve_forever(runner=None)
+    print('Server should be running. Press Ctrl+C to quit.')
+    try:
+        while executor.server.is_running:
+            pass
+    except KeyboardInterrupt:
+        pass
+    executor.server.stop_server()
+    print('Server script is now exiting.')

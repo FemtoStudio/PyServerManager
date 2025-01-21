@@ -1,9 +1,12 @@
 import asyncio
-import multiprocessing
 import logging
+import multiprocessing
+import traceback
 from multiprocessing import Process
 
 from PyServerManager.async_server.base_async_pickle import BaseAsyncPickle
+from PyServerManager.core.logger import SingletonLogger
+
 
 def heavy_compute_example(payload):
     """
@@ -21,17 +24,21 @@ def heavy_compute_example(payload):
 # Example Worker Functions
 ##################################
 
-def worker_main_data(data_queue, result_queue, data_handler):
+def worker_main_data(data_queue, result_queue, data_handler, worker_init_fn=None):
     """
     Worker process for 'DATA' messages.
     Continuously reads (client_id, payload) from data_queue,
     calls data_handler(payload), and puts (client_id, result) into result_queue.
     """
+    if worker_init_fn is not None:
+        # worker_init_fn might return something or just do in-place global init
+        worker_init_fn()
     while True:
         try:
             client_id, payload = data_queue.get()  # blocks until data
             if client_id is None and payload is None:
                 # sentinel => shutdown
+                print("[worker_main_data] Received sentinel, shutting down...")
                 break
 
             print(f"[worker_main_data] Processing payload for client {client_id}")
@@ -39,7 +46,7 @@ def worker_main_data(data_queue, result_queue, data_handler):
             result_queue.put((client_id, result))
 
         except Exception as e:
-            print(f"[worker_main_data] Error: {e}")
+            print(f"[worker_main_data] Error: {e}\nTraceback: {traceback.extract_stack()}")
 
 
 def worker_main_cmd(cmd_queue, result_queue):
@@ -58,11 +65,12 @@ def worker_main_cmd(cmd_queue, result_queue):
             if cmd_payload == "shutdown_server":
                 result_queue.put((None, "__server_shutdown__"))
             else:
+                # Default behavior: echo back a string
                 result = f"CMD processed: {cmd_payload}"
                 result_queue.put((client_id, result))
 
         except Exception as e:
-            print(f"[worker_main_cmd] Error: {e}")
+            print(f"[worker_main_cmd] Error: {e}\nTraceback: {traceback.extract_stack()}")
 
 
 ##################################
@@ -85,7 +93,8 @@ class AsyncPickleServer(BaseAsyncPickle):
             logger=None,
             data_workers=2,
             cmd_workers=1,
-            data_handler=None
+            data_handler=None,
+            worker_init_fn=None,
     ):
         """
         :param data_workers: Number of processes for handling DATA tasks
@@ -94,13 +103,13 @@ class AsyncPickleServer(BaseAsyncPickle):
         """
         self.host = host
         self.port = port
-        self.logger = logger or logging.getLogger("AsyncPickleServer")
+        self.logger = logger or SingletonLogger.get_instance("AsyncPickleServer")
         self.logger.setLevel(logging.INFO)
 
         self.server = None
         self._stopping = False
 
-        # Instead of an integer, let's store clients by their peername => (reader, writer)
+        # Instead of a single integer, store clients by peername => (reader, writer)
         self.clients = {}
 
         # Set up multiprocessing manager and queues
@@ -111,13 +120,15 @@ class AsyncPickleServer(BaseAsyncPickle):
 
         # Set default or user-specified data handler
         self.data_handler = data_handler or heavy_compute_example
+        self.worker_init_fn = worker_init_fn or (lambda: None)
 
         # Spawn worker processes for data
         self.data_processes = []
+        self.logger.info(f"Starting {data_workers} data worker processes...")
         for _ in range(data_workers):
             p = Process(
                 target=worker_main_data,
-                args=(self.data_queue, self.result_queue, self.data_handler)
+                args=(self.data_queue, self.result_queue, self.data_handler, self.worker_init_fn)
             )
             p.start()
             self.data_processes.append(p)
@@ -154,7 +165,7 @@ class AsyncPickleServer(BaseAsyncPickle):
         """
         Gracefully shuts down:
           1) Stop accepting connections.
-          2) Send sentinel to worker processes => (None, None).
+          2) Send sentinel (None,None) to worker processes => signals them to exit.
           3) Close existing client connections.
           4) Join processes. If a process doesn't exit within `force_terminate_timeout` seconds, terminate it.
           5) Shut down the manager to free resources.
@@ -204,6 +215,9 @@ class AsyncPickleServer(BaseAsyncPickle):
         Each new client connection is handled here.
         We'll read messages in a loop, route them to the appropriate queue,
         and rely on _result_listener to send responses back.
+
+        Additionally, if we see a special command like 'get_server_info',
+        we handle it here in the main thread (so we can access server state).
         """
         peername = writer.get_extra_info('peername')
         self.clients[peername] = (reader, writer)
@@ -222,11 +236,19 @@ class AsyncPickleServer(BaseAsyncPickle):
                 if message_type == "DATA":
                     # Put in the data queue => worker_main_data
                     self.data_queue.put((peername, payload))
+
                 elif message_type == "CMD":
-                    # Put in the cmd queue => worker_main_cmd
-                    self.cmd_queue.put((peername, payload))
+                    if payload == "get_server_info":
+                        # Handle this command directly in the server
+                        info = self.get_server_info()
+                        await self.write_message(writer, "RESP", info)
+                    else:
+                        # Put in the cmd queue => worker_main_cmd
+                        self.cmd_queue.put((peername, payload))
+
                 else:
                     self.logger.warning(f"Unknown message_type '{message_type}' from {peername}")
+
         except asyncio.IncompleteReadError:
             self.logger.info(f"Client {peername} connection aborted.")
         except ConnectionResetError:
@@ -236,7 +258,10 @@ class AsyncPickleServer(BaseAsyncPickle):
         finally:
             # Cleanup
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except ConnectionResetError:
+                self.logger.warning(f"Client {peername} connection reset while closing.")
             self.clients.pop(peername, None)
             self.logger.info(f"Client {peername} closed.")
 
@@ -265,7 +290,7 @@ class AsyncPickleServer(BaseAsyncPickle):
                 if client_id is None:
                     continue
 
-                self.logger.info(f"[_result_listener] Received result for {client_id}: {result}")
+                self.logger.debug(f"[_result_listener] Received result for {client_id}: {result}")
 
                 # Respond to the client, if they still exist
                 if client_id in self.clients:
@@ -279,28 +304,82 @@ class AsyncPickleServer(BaseAsyncPickle):
 
         self.logger.info("Result listener exiting.")
 
+    def serve_forever(self, runner=None, force_terminate_timeout=5.0):
+        """
+        A convenience method that starts the server with runner.run()
+        and blocks until Ctrl+C or stop_server is invoked.
+        """
+        runner = runner or asyncio
+
+        async def _start_server_flow():
+            try:
+                await self.start_server()
+            except asyncio.CancelledError:
+                pass
+            finally:
+                # If the server was canceled or ended, ensure we shut it down
+                await self.stop_server(force_terminate_timeout=force_terminate_timeout)
+
+        try:
+            runner.run(_start_server_flow())
+        except KeyboardInterrupt:
+            print("Keyboard interrupt, exiting.")
+
+    @property
+    def is_running(self) -> bool:
+        """
+        Return True if the server is bound and we have not yet initiated stopping.
+        """
+        return (self.server is not None) and (not self._stopping)
+
+    def get_server_info(self) -> dict:
+        """
+        Return a dictionary of current server status:
+         - host/port
+         - how many data/cmd workers
+         - how many clients connected
+         - list of client peernames
+         - queue sizes
+         - whether server is stopping or still running
+        """
+        try:
+            data_queue_size = self.data_queue.qsize()
+        except NotImplementedError:
+            data_queue_size = "unknown"
+
+        try:
+            cmd_queue_size = self.cmd_queue.qsize()
+        except NotImplementedError:
+            cmd_queue_size = "unknown"
+
+        try:
+            result_queue_size = self.result_queue.qsize()
+        except NotImplementedError:
+            result_queue_size = "unknown"
+
+        return {
+            "host": self.host,
+            "port": self.port,
+            "data_workers_count": len(self.data_processes),
+            "cmd_workers_count": len(self.cmd_processes),
+            "connected_clients_count": len(self.clients),
+            "connected_clients_peernames": [str(k) for k in self.clients.keys()],
+            "data_queue_size": data_queue_size,
+            "cmd_queue_size": cmd_queue_size,
+            "result_queue_size": result_queue_size,
+            "is_stopping": self._stopping,
+            "is_running": self.is_running
+        }
+
 
 if __name__ == '__main__':
     import asyncio
 
-    async def main():
-        logging.basicConfig(level=logging.INFO)
-        server = AsyncPickleServer(
-            host='127.0.0.1',
-            port=12345,  # or any free port
-            data_workers=2,
-            cmd_workers=1
-        )
-        try:
-            await server.start_server()
-        except asyncio.CancelledError:
-            pass
-        finally:
-            # If the server was canceled or ended, ensure we shut it down
-            await server.stop_server(force_terminate_timeout=5.0)
-
-    if __name__ == "__main__":
-        try:
-            asyncio.run(main())
-        except KeyboardInterrupt:
-            print("Keyboard interrupt, exiting.")
+    # A quick demo usage
+    server = AsyncPickleServer(
+        host='127.0.0.1',
+        port=12355,  # or any free port
+        data_workers=2,
+        cmd_workers=1
+    )
+    server.serve_forever()

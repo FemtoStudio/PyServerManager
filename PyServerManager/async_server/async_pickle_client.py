@@ -101,12 +101,13 @@ class AsyncPickleClient(BaseAsyncPickle):
         """
         if not self.is_connected:
             raise RuntimeError("Not connected. Call wait_for_connection or background_retry_connect first.")
-        self.logger.info(f"[send_data] Sending data: {data}")
+        self.logger.debug(f"[send_data] Sending data: {data}")
         await self.write_message(self.writer, "DATA", data)
         msg = await self.read_next_message(self.reader)
         if msg:
             msg_type, payload = msg
-            self.logger.info(f"[send_data] Received {msg_type} => {payload}")
+            payload_print = payload[:100] + "..." if len(payload) > 100 else payload
+            self.logger.debug(f"[send_data] Received {msg_type} => {payload_print}")
             return payload
         return None
 

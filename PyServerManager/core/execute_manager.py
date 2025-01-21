@@ -251,6 +251,7 @@ class WindowsExecutor(BaseExecutor):
             # Redact after the = sign for cleanliness
             # or just do a simple approach:
             log_cmd = log_cmd.rsplit('--encoded-args', 1)[0] + '--encoded-args ...'
+            self.logger.debug(f"[WindowsExecutor] redacted command:\n{log_cmd}\n")
 
         self.logger.info(f"[WindowsExecutor] inline command:\n{log_cmd}\n")
 
@@ -509,6 +510,8 @@ class ExecuteThread(threading.Thread):
         """
         self.executor.terminate_process(self.proc)
 
+    def __str__(self):
+        return f"<ExecuteThread {self.name} exit_code={self.exit_code} output={self.output}>"
 
 class ExecuteThreadManager:
     """

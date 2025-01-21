@@ -90,8 +90,8 @@ class BaseUserTaskExecutor:
         :return: The ExecuteThread object
         """
         final_args = args_dict or {}
-        print("final_args", final_args)
         # Make the thread
+        self.logger.info(f"Executing task with final_args: {final_args}")
         thread = self.executor_manager.get_thread(
             args=final_args,
             pre_cmd=pre_cmd,
@@ -115,8 +115,10 @@ class BaseUserTaskExecutor:
             self.logger.info(f"Output:\n{thread.output}")
         if thread.parsed_output:
             self.logger.info(f"Parsed JSON Output:\n{thread.parsed_output}")
-
-
+    
+    def set_logger_level(self, level):
+        self.logger.setLevel(level)
+    
 if __name__ == "__main__":
     """
     Quick test to confirm that BaseUserTaskExecutor can spawn the task_executor.
