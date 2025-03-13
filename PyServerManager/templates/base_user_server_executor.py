@@ -114,29 +114,14 @@ class BaseUserServerExecutor(BaseUserTaskExecutor):
         )
         return self.server_thread
 
-    #
-    # def run_server(self, host="localhost", port=5050, open_new_terminal=False):
-    #     """
-    #     Launch the AsyncPickleServer in a separate Python interpreter
-    #     using the ExecutorThreadManager. That separate process will block
-    #     inside its own asyncio loop until we shut it down.
-    #     """
-    #     self.host = host
-    #     self.port = port
-    #     self.logger.info(f"Starting server on {host}:{port}...")
-    #
-    #     args_dict = {
-    #         "host": self.host,
-    #         "port": self.port,
-    #     }
-    #
-    #     # Fire up a new process
-    #     thread = self.execute(
-    #         args_dict=args_dict,
-    #         encode_args=True,
-    #         open_new_terminal=open_new_terminal
-    #     )
-    #     return thread
+    def cancel_connect_attempt(self):
+        """
+        Instruct the client (if any) to stop retrying
+        connection attempts.
+        """
+        if self.client:
+            self.logger.info("User requested cancel of connect attempts.")
+            self.client.stop_retrying()
 
     def connect_client(self, start_sleep=2, retry_delay=2, max_retries=None):
 

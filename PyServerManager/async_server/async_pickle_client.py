@@ -117,12 +117,13 @@ class AsyncPickleClient(BaseAsyncPickle):
         """
         if not self.is_connected:
             raise RuntimeError("Not connected.")
-        self.logger.info(f"[send_cmd] Sending command: {cmd}")
+        if cmd not in ["shutdown_server", "get_server_info"]:
+            self.logger.info(f"[send_cmd] Sending command: {cmd}")
         await self.write_message(self.writer, "CMD", cmd)
         msg = await self.read_next_message(self.reader)
         if msg:
             msg_type, payload = msg
-            self.logger.info(f"[send_cmd] Received {msg_type} => {payload}")
+            self.logger.debug(f"[send_cmd] Received {msg_type} => {payload}")
             return payload
         return None
 

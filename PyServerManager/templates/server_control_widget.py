@@ -17,8 +17,8 @@ from PySide6 import QtCore, QtWidgets
 from PyServerManager.async_server.base_async_pickle import BaseAsyncPickle
 from PyServerManager.core.logger import SingletonLogger
 from PyServerManager.templates.base_user_server_executor import BaseUserServerExecutor
-from PyServerManager.templates.workers import ServerInfoWorker, ServerRequestWorker
 from PyServerManager.templates.server_info_widget import ServerInfoWidget
+from PyServerManager.templates.workers import ServerRequestWorker
 from PyServerManager.widgets.collapsibleframe import CollapsibleFrame
 
 logger = SingletonLogger.get_instance("ServerControlWidgetLogger")
@@ -225,13 +225,11 @@ class SettingsDialog(QtWidgets.QDialog):
         super().accept()  # close the dialog
 
 
-class ServerControlWidget(QtWidgets.QWidget):
-    """
-    A main widget for controlling server + client, with a "Settings..." button
-    that opens the SettingsDialog. The user-chosen settings are persisted
-    in ~/.PyServerManagerSettings/settings.json
-    """
+# A small Unicode gear for Settings
+SETTINGS_SYMBOL = u"\U00002699\ufe0f"  # ⚙️
 
+
+class ServerControlWidget(QtWidgets.QWidget):
     serverStarted = QtCore.Signal(str, int)
     clientConnected = QtCore.Signal()
     serverResponse = QtCore.Signal(object)
@@ -248,19 +246,20 @@ class ServerControlWidget(QtWidgets.QWidget):
         self._server_running = False
         self._client_connected = False
 
+        # Track if we are attempting to connect
+        self._connect_in_progress = False
 
-        # We'll store only the user-level items for host/port here.
-        # The advanced items are handled by the SettingsDialog.
+        # Dialog for advanced settings
         self.settings_dialog = SettingsDialog(parent=self)
 
-        # The rest of the widget UI
+        # Set up the UI
         self.setup_ui()
 
     def setup_ui(self):
         layout = QtWidgets.QVBoxLayout()
         self.setLayout(layout)
 
-        # Host/Port
+        # Host/Port row
         row_host_port = QtWidgets.QHBoxLayout()
         lbl_host = QtWidgets.QLabel("Host:")
         self.edit_host = QtWidgets.QLineEdit("127.0.0.1")
@@ -269,44 +268,65 @@ class ServerControlWidget(QtWidgets.QWidget):
         self.spin_port.setRange(1, 65535)
         self.spin_port.setValue(5050)
 
-        btn_find_port = QtWidgets.QPushButton("Find Port")
-        btn_find_port.clicked.connect(self.on_find_port)
+        # Button: Find Port
+        self.btn_find_port = QtWidgets.QPushButton("Find Port")
+        self.btn_find_port.clicked.connect(self.on_find_port)
+
+        # Button: Settings (small gear icon)
+        self.btn_open_settings = QtWidgets.QPushButton(SETTINGS_SYMBOL)
+        # A little styling to make it narrower
+        self.btn_open_settings.setFixedWidth(32)
+        font = self.btn_open_settings.font()
+        font.setPointSize(10)
+        self.btn_open_settings.setFont(font)
+        self.btn_open_settings.clicked.connect(self.on_open_settings)
+        # Optionally disable the default border for a more "icon-like" look:
+        # self.btn_open_settings.setStyleSheet("QPushButton { border: none; }")
 
         row_host_port.addWidget(lbl_host)
         row_host_port.addWidget(self.edit_host)
         row_host_port.addWidget(lbl_port)
         row_host_port.addWidget(self.spin_port)
-        row_host_port.addWidget(btn_find_port)
-
+        row_host_port.addWidget(self.btn_find_port)
+        row_host_port.addWidget(self.btn_open_settings)
         layout.addLayout(row_host_port)
 
-        # ... inside your widget's __init__ or setup:
+        # Collapsible "Server Info" panel
         self.info_widget = ServerInfoWidget(self.server_exec, refresh_interval=5.0, parent=self)
-
-        # Add it to the layout
         info_collapsible = CollapsibleFrame("Server Info", self)
         info_collapsible.set_expanded(False)
-        # some_layout = QtWidgets.QHBoxLayout(self)
         info_collapsible.add_widget(self.info_widget)
         layout.addWidget(info_collapsible)
 
-        # Settings...
-        self.btn_open_settings = QtWidgets.QPushButton("Settings...")
-        self.btn_open_settings.clicked.connect(self.on_open_settings)
-        layout.addWidget(self.btn_open_settings)
-
-        # Control buttons
+        # Server + Client Controls
         self.btn_start_server = QtWidgets.QPushButton("Start Server")
         self.btn_start_server.clicked.connect(self.on_start_server)
-        self.btn_connect_client = QtWidgets.QPushButton("Connect to Server")
-        self.btn_connect_client.clicked.connect(self.on_connect_client)
-        self.btn_execute = QtWidgets.QPushButton("Execute (Send Data)")
-        self.btn_execute.clicked.connect(self.on_execute_request)
-        self.btn_execute.setEnabled(False)
-
         layout.addWidget(self.btn_start_server)
-        layout.addWidget(self.btn_connect_client)
-        layout.addWidget(self.btn_execute)
+
+        # Row for "Connect" and "Cancel Connect" side by side
+        row_connect = QtWidgets.QHBoxLayout()
+
+        # Connect button, disabled until server is started
+        self.btn_connect_client = QtWidgets.QPushButton("Connect to Server")
+        self.btn_connect_client.setEnabled(False)  # disable by default
+        self.btn_connect_client.clicked.connect(self.on_connect_client)
+        row_connect.addWidget(self.btn_connect_client)
+
+        # Cancel Connect button, also disabled by default
+        self.btn_cancel_connect = QtWidgets.QPushButton("Cancel Connect")
+        self.btn_cancel_connect.setEnabled(False)
+        self.btn_cancel_connect.clicked.connect(self.on_cancel_connect)
+        row_connect.addWidget(self.btn_cancel_connect)
+
+        layout.addLayout(row_connect)
+
+        # A button to copy the command that starts the server (disabled until we actually start)
+        self.btn_copy_cmd = QtWidgets.QPushButton("Copy Server Cmd")
+        self.btn_copy_cmd.setEnabled(False)
+        self.btn_copy_cmd.clicked.connect(self.on_copy_cmd)
+        layout.addWidget(self.btn_copy_cmd)
+
+        # (Removed or commented out any "Execute" button here to follow your request)
 
         layout.addStretch()
 
@@ -361,23 +381,34 @@ class ServerControlWidget(QtWidgets.QWidget):
             self.info_widget.set_refresh_interval(new_period)
 
     def on_start_server(self):
+        if self._connect_in_progress:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Connection in Progress",
+                "Cannot start a new server while attempting to connect.\n"
+                "Please cancel the connect attempt first."
+            )
+            return
+
+        if self._server_running:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Server Already Running",
+                "Server is already running."
+            )
+            return
+
         host = self.edit_host.text().strip()
         port = self.spin_port.value()
-
-        # read advanced from the settings dialog’s .to_dict()
         adv = self.settings_dialog.to_dict()
 
         dw = adv["data_workers"]
         cw = adv["cmd_workers"]
         lvl = adv["logger_level"]
         open_term = adv["open_in_new_terminal"]
-        auto_conn = adv["auto_connect"]
 
-        logger.info(f"Start server on {host}:{port} => data_workers={dw}, cmd_workers={cw}, "
-                    f"logger={lvl}, openTerm={open_term}")
-        self.info_widget.set_refresh_interval(adv.get("server_info_period", 5.0))
-
-        self.server_exec.run_server(
+        # Start the server (thread or external process)
+        self.server_thread = self.server_exec.run_server(
             host=host,
             port=port,
             open_new_terminal=open_term,
@@ -385,13 +416,15 @@ class ServerControlWidget(QtWidgets.QWidget):
             cmd_workers=cw,
             logger_level=lvl
         )
+        if self.server_thread:
+            self.btn_copy_cmd.setEnabled(True)
 
         self._server_running = True
         self.btn_start_server.setEnabled(False)
-        self.serverStarted.emit(host, port)
+        # Now allow connect
+        self.btn_connect_client.setEnabled(True)
 
-        if auto_conn:
-            self.on_connect_client()
+        self.serverStarted.emit(host, port)
 
     def on_connect_client(self):
         if not self._server_running:
@@ -405,18 +438,34 @@ class ServerControlWidget(QtWidgets.QWidget):
         if mr == 0:
             mr = None
 
-        host = self.edit_host.text().strip()
-        port = self.spin_port.value()
-        logger.info(f"Connect client => host={host}, port={port}, start_sleep={st}, retry_delay={rd}, max_retries={mr}")
-
-        self.server_exec.host = host
-        self.server_exec.port = port
-        self.server_exec.connect_client(start_sleep=st, retry_delay=rd, max_retries=mr)
-        self._client_connected = True
-        self.btn_execute.setEnabled(True)
+        self._connect_in_progress = True
+        self.btn_cancel_connect.setEnabled(True)
         self.btn_connect_client.setEnabled(False)
 
-        self.clientConnected.emit()
+        self.server_exec.host = self.edit_host.text().strip()
+        self.server_exec.port = self.spin_port.value()
+
+        logger.info(f"Connect client => host={self.server_exec.host}, "
+                    f"port={self.server_exec.port}, start_sleep={st}, retry_delay={rd}, max_retries={mr}")
+        self.server_exec.connect_client(start_sleep=st, retry_delay=rd, max_retries=mr)
+
+
+    def on_cancel_connect(self):
+        """
+        User clicked 'Cancel Connect' while a background retry
+        is in progress.
+        """
+        if not self._connect_in_progress:
+            return
+
+        self._connect_in_progress = False
+        self.server_exec.cancel_connect_attempt()
+
+        # Re-enable the 'Connect to Server' button
+        self.btn_connect_client.setEnabled(True)
+        self.btn_cancel_connect.setEnabled(False)
+
+        logger.info("User canceled the connect attempt.")
 
     def on_execute_request(self):
         if not self._client_connected:
@@ -435,12 +484,39 @@ class ServerControlWidget(QtWidgets.QWidget):
         logger.info(f"Got server response: {response}")
         self.serverResponse.emit(response)
 
+        # If we were never "connected" before, or if you want to handle
+        # the moment you know the server accepted a request:
+        if not self._client_connected:
+            self._client_connected = True
+            self._connect_in_progress = False
+            self.btn_cancel_connect.setEnabled(False)
+
     def handle_finished(self):
         self.btn_execute.setEnabled(True)
         self.executeFinished.emit()
         if getattr(self, "_worker", None):
             self._worker.deleteLater()
             self._worker = None
+
+    def on_copy_cmd(self):
+        if not hasattr(self, "server_thread") or not self.server_thread:
+            QtWidgets.QMessageBox.information(self, "No Cmd", "No server command available yet.")
+            return
+
+        cmd_str = self.server_thread.cmd or ""
+        if not cmd_str:
+            QtWidgets.QMessageBox.information(self, "Empty Cmd", "Server command string is empty.")
+            return
+
+        # Copy to clipboard
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText(cmd_str)
+
+        QtWidgets.QMessageBox.information(
+            self,
+            "Command Copied",
+            "The server command has been copied to your clipboard."
+        )
 
 
 if __name__ == "__main__":

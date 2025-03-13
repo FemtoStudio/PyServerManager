@@ -231,7 +231,7 @@ class AsyncPickleServer(BaseAsyncPickle):
                     break
 
                 message_type, payload = msg
-                self.logger.info(f"[{peername}] type='{message_type}' payload={payload}")
+                self.logger.debug(f"[{peername}] type='{message_type}' payload={payload}")
 
                 if message_type == "DATA":
                     # Put in the data queue => worker_main_data
